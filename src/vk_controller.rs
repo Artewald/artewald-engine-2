@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fs::read_to_string};
 
-use ash::{Entry, Instance, vk::{SurfaceKHR, PhysicalDevice, DeviceQueueCreateInfo, DeviceCreateInfo, Queue, SwapchainCreateInfoKHR, ImageView, ImageViewCreateInfo, StructureType, InstanceCreateFlags, InstanceCreateInfo, KhrPortabilityEnumerationFn, self, DebugUtilsMessengerCreateInfoEXT, SwapchainKHR, Image, ComponentMapping, ImageSubresourceRange, Offset2D}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
-use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle, HasDisplayHandle, HasWindowHandle};
+use ash::{Entry, Instance, vk::{SurfaceKHR, PhysicalDevice, DeviceQueueCreateInfo, DeviceCreateInfo, Queue, SwapchainCreateInfoKHR, ImageView, ImageViewCreateInfo, StructureType, InstanceCreateFlags, InstanceCreateInfo, KhrPortabilityEnumerationFn, self, DebugUtilsMessengerCreateInfoEXT, SwapchainKHR, Image, ComponentMapping, ImageSubresourceRange}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
+use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 
@@ -15,26 +15,39 @@ const VALIDATION_LAYERS: [&str; 1] = ["VK_LAYER_KHRONOS_validation"];
 #[cfg(not(debug_assertions))]
 const IS_DEBUG_MODE: bool = false;
 
-pub struct VkAndWindowController {
+pub struct VkController {
     window: Window,
     entry: Entry,
     instance: Instance,
-    debug_messenger_create_info: Option<DebugUtilsMessengerCreateInfoEXT>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
+    physical_device: PhysicalDevice,
     device: Device,
     graphics_queue: Queue,
     present_queue: Queue,
     surface: SurfaceKHR,
+    swapchain_loader: Swapchain,
     swapchain: SwapchainKHR,
     swapchain_images: Vec<Image>,
     swapchain_image_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<ImageView>,
+    render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
+    graphics_pipeline: vk::Pipeline,
+    swapchain_framebuffers: Vec<vk::Framebuffer>,
+    command_pool: vk::CommandPool,
+    command_buffers: Vec<vk::CommandBuffer>,
+    image_available_semaphores: Vec<vk::Semaphore>,
+    render_finished_semaphores: Vec<vk::Semaphore>,
+    in_flight_fences: Vec<vk::Fence>,
+    current_frame: usize,
+    pub frame_buffer_resized: bool,
+    is_minimized: bool,
 }
 
-impl VkAndWindowController {
+impl VkController {
     const DEVICE_EXTENSIONS: [*const i8; 1] = [Swapchain::name().as_ptr()];
+    const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
     pub fn new(window: Window, application_name: &str) -> Self {
         let entry = Entry::linked();
@@ -62,40 +75,66 @@ impl VkAndWindowController {
 
         let (graphics_queue, present_queue) = Self::create_graphics_and_present_queue(&device, &queue_families);
 
-        let swapchain = Self::create_swapchain(&entry, &instance, &physical_device, &device, &surface, &window);
+        let swapchain_loader = Swapchain::new(&instance, &device);
 
-        let swapchain_images = Self::get_swapchain_images(&instance, &device, &swapchain);
+        let swapchain = Self::create_swapchain(&entry, &instance, &physical_device,  &surface, &window, &swapchain_loader);
+
+        let swapchain_images = Self::get_swapchain_images(&swapchain, &swapchain_loader);
 
         let swapchain_image_format = Self::choose_swap_surface_format(&Self::query_swapchain_support(&entry, &instance, &physical_device, &surface).formats).format;
 
         let swapchain_extent = Self::choose_swap_extent(&Self::query_swapchain_support(&entry, &instance, &physical_device, &surface).capabilities, &window);
 
-        let swapchain_image_views = Self::create_image_views(&instance, &device, &swapchain_images, swapchain_image_format);
+        let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format);
 
         let pipeline_layout = Self::create_pipeline_layout(&device);
+
+        let render_pass = Self::create_render_pass(swapchain_image_format, &device);
+
+        let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass);
+
+        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent);
+
+        let command_pool = Self::create_command_pool(&device, &queue_families);
+
+        let command_buffers = Self::create_command_buffers(&device, &command_pool, &swapchain_framebuffers);
+
+        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device);
 
         Self {
             window,
             entry,
             instance,
-            debug_messenger_create_info,
             debug_messenger,
+            physical_device,
             device,
             graphics_queue,
             present_queue,
             surface,
+            swapchain_loader,
             swapchain,
             swapchain_images,
             swapchain_image_format,
             swapchain_extent,
             swapchain_image_views,
             pipeline_layout,
+            render_pass,
+            graphics_pipeline,
+            swapchain_framebuffers,
+            command_pool,
+            command_buffers,
+            image_available_semaphores,
+            render_finished_semaphores,
+            in_flight_fences,
+            current_frame: 0,
+            frame_buffer_resized: false,
+            is_minimized: false,
         }
     }
 }
 
 // Instance
-impl VkAndWindowController {
+impl VkController {
     fn create_instance(entry: &Entry, application_name: &str, window: &Window, debug_create_info: Option<&DebugUtilsMessengerCreateInfoEXT>) -> Instance {
         if IS_DEBUG_MODE && !Self::check_validation_layer_support(entry) {
             panic!("Validation layers requested because of debug mode, but is not available!");
@@ -178,7 +217,7 @@ impl VkAndWindowController {
 }
 
 // Debug messenger
-impl VkAndWindowController {
+impl VkController {
     fn setup_debug_messenger(entry: &Entry, instance: &Instance, debug_utils_create_info: DebugUtilsMessengerCreateInfoEXT) -> vk::DebugUtilsMessengerEXT {
         let debug_utils_loader = DebugUtils::new(entry, instance);
         match unsafe {
@@ -232,7 +271,7 @@ impl VkAndWindowController {
 
 
 // Physical device
-impl VkAndWindowController {
+impl VkController {
     fn pick_physical_device(entry: &Entry, instance: &Instance, surface: &SurfaceKHR) -> PhysicalDevice{
         let mut device_vec = unsafe {
             instance.enumerate_physical_devices()
@@ -319,7 +358,7 @@ impl QueueFamilyIndices {
 }
 
 // Queues
-impl VkAndWindowController {
+impl VkController {
     fn find_queue_families(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, surface: &SurfaceKHR) -> QueueFamilyIndices {
         let mut indices = QueueFamilyIndices { graphics_family: None, present_family: None };
 
@@ -373,7 +412,7 @@ impl VkAndWindowController {
 }
 
 // Logical device
-impl VkAndWindowController {
+impl VkController {
     fn create_logical_device(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, surface: &SurfaceKHR) -> Device {
         let indices = Self::find_queue_families(entry, instance, physical_device, surface);
         
@@ -424,7 +463,7 @@ impl VkAndWindowController {
 }
 
 // Surface
-impl VkAndWindowController {
+impl VkController {
     fn create_surface(entry: &Entry, instance: &Instance, window: &Window) -> SurfaceKHR {
         unsafe {
             ash_window::create_surface(
@@ -445,7 +484,7 @@ struct SwapchainSupportDetails {
 }
 
 // Swapchain
-impl VkAndWindowController {
+impl VkController {
     fn query_swapchain_support(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, surface: &SurfaceKHR) -> SwapchainSupportDetails {
         unsafe {
             let capabilities = Surface::new(entry, instance).get_physical_device_surface_capabilities(*physical_device, *surface).unwrap();
@@ -497,7 +536,7 @@ impl VkAndWindowController {
         }
     }
 
-    fn create_swapchain(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, device: &Device, surface: &SurfaceKHR, window: &Window) -> SwapchainKHR {
+    fn create_swapchain(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, surface: &SurfaceKHR, window: &Window, swapchain_loader: &Swapchain) -> SwapchainKHR {
         let swapchain_support = Self::query_swapchain_support(entry, instance, physical_device, surface);
 
         let surface_format = Self::choose_swap_surface_format(&swapchain_support.formats);
@@ -539,17 +578,18 @@ impl VkAndWindowController {
         }
 
         unsafe {
-            Swapchain::new(instance, device).create_swapchain(&swapchain_create_info, None)
+            swapchain_loader.create_swapchain(&swapchain_create_info, None)
         }.unwrap()
     }
 
-    fn get_swapchain_images(instance: &Instance, device: &Device, swapchain: &SwapchainKHR) -> Vec<Image> {
+    #[inline(always)]
+    fn get_swapchain_images(swapchain: &SwapchainKHR, swapchain_loader: &Swapchain) -> Vec<Image> {
         unsafe {
-            Swapchain::new(instance, device).get_swapchain_images(*swapchain)
+            swapchain_loader.get_swapchain_images(*swapchain)
         }.unwrap()
     }
 
-    fn create_image_views(instance: &Instance, device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
+    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
         for swapchain_image in swapchain_images.iter() {
@@ -581,13 +621,52 @@ impl VkAndWindowController {
 
         swapchain_image_views
     }
+
+    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D) -> Vec<vk::Framebuffer> {
+        let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_views.len());
+
+        for swapchain_image_view in swapchain_image_views.iter() {
+            let attachments = [*swapchain_image_view];
+
+            let framebuffer_create_info = vk::FramebufferCreateInfo {
+                s_type: StructureType::FRAMEBUFFER_CREATE_INFO,
+                render_pass: *render_pass,
+                attachment_count: attachments.len() as u32,
+                p_attachments: attachments.as_ptr(),
+                width: swapchain_extent.width,
+                height: swapchain_extent.height,
+                layers: 1,
+                ..Default::default()
+            };
+
+            swapchain_framebuffers.push(unsafe {
+                device.create_framebuffer(&framebuffer_create_info, None)
+            }.unwrap());
+        }
+
+        swapchain_framebuffers
+    }
+
+    fn cleanup_swapchain(&mut self) {
+        unsafe {
+            self.swapchain_framebuffers.iter().for_each(|framebuffer| {
+                self.device.destroy_framebuffer(*framebuffer, None);
+            });
+
+            self.swapchain_image_views.iter().for_each(|image_view| {
+                self.device.destroy_image_view(*image_view, None);
+            });
+
+            self.swapchain_loader.destroy_swapchain(self.swapchain, None);
+        }
+    }
 }
 
 // Graphics pipeline
-impl VkAndWindowController {
-    fn create_graphics_pipeline(device: &Device, swapchain_extent: &vk::Extent2D, pipeline_layout: &vk::PipelineLayout) {
-        let vert_shader_code = Self::compile_shader("../assets/shaders/triangle.vert", ShaderKind::Vertex, "triangle.vert");
-        let frag_shader_code = Self::compile_shader("../assets/shaders/triangle.frag", ShaderKind::Fragment, "triangle.frag");
+impl VkController {
+    fn create_graphics_pipeline(device: &Device, swapchain_extent: &vk::Extent2D, pipeline_layout: &vk::PipelineLayout, render_pass: &vk::RenderPass) -> vk::Pipeline {
+        let vert_shader_code = Self::compile_shader("./assets/shaders/triangle.vert", ShaderKind::Vertex, "triangle.vert");
+        let frag_shader_code = Self::compile_shader("./assets/shaders/triangle.frag", ShaderKind::Fragment, "triangle.frag");
 
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code);
@@ -626,23 +705,6 @@ impl VkAndWindowController {
             ..Default::default()
         };
 
-        let viewport = vk::Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: swapchain_extent.width as f32,
-            height: swapchain_extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
-
-        let scissor = vk::Rect2D {
-            offset: Offset2D {
-                x: 0,
-                y: 0,
-            },
-            extent: *swapchain_extent,
-        };
-
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
         let dynamic_state = vk::PipelineDynamicStateCreateInfo {
@@ -651,6 +713,9 @@ impl VkAndWindowController {
             p_dynamic_states: dynamic_states.as_ptr(),
             ..Default::default()
         };
+
+        let viewport = Self::get_viewport(swapchain_extent);
+        let scissor = Self::get_scissor(swapchain_extent);
 
         let viewport_state = vk::PipelineViewportStateCreateInfo {
             s_type: StructureType::PIPELINE_VIEWPORT_STATE_CREATE_INFO,
@@ -708,12 +773,37 @@ impl VkAndWindowController {
             ..Default::default()
         };
 
+        let pipeline_info = vk::GraphicsPipelineCreateInfo {
+            s_type: StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
+            stage_count: shader_stages.len() as u32,
+            p_stages: shader_stages.as_ptr(),
+            p_vertex_input_state: &vertex_input_info,
+            p_input_assembly_state: &input_assembly,
+            p_viewport_state: &viewport_state,
+            p_rasterization_state: &rasterizer,
+            p_multisample_state: &multisampling,
+            p_depth_stencil_state: std::ptr::null(),
+            p_color_blend_state: &color_blending,
+            p_dynamic_state: &dynamic_state,
+            layout: *pipeline_layout,
+            render_pass: *render_pass,
+            subpass: 0,
+            base_pipeline_handle: vk::Pipeline::null(),
+            base_pipeline_index: -1,
+            ..Default::default()
+        };
+
+        let graphics_pipeline = unsafe {
+            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+        }.unwrap()[0];
 
         // This should always happen at the end
         unsafe {
             device.destroy_shader_module(vert_shader_module, None);
             device.destroy_shader_module(frag_shader_module, None);
         }
+
+        graphics_pipeline
     }
 
     fn compile_shader(path: &str, shader_kind: ShaderKind, identifier: &str) -> Vec<u32> {
@@ -748,5 +838,335 @@ impl VkAndWindowController {
         unsafe {
             device.create_pipeline_layout(&pipeline_layout_create_info, None)
         }.unwrap()
+    }
+
+    fn create_render_pass(swapchain_image_format: vk::Format, device: &Device) -> vk::RenderPass {
+        let color_attachment = vk::AttachmentDescription {
+            format: swapchain_image_format,
+            samples: vk::SampleCountFlags::TYPE_1,
+            load_op: vk::AttachmentLoadOp::CLEAR,
+            store_op: vk::AttachmentStoreOp::STORE,
+            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+            initial_layout: vk::ImageLayout::UNDEFINED,
+            final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+            ..Default::default()
+        };
+
+        let color_attachment_ref = vk::AttachmentReference {
+            attachment: 0,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        };
+
+        let subpass = vk::SubpassDescription {
+            pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
+            color_attachment_count: 1,
+            p_color_attachments: &color_attachment_ref,
+            ..Default::default()
+        };
+
+        let dependency = vk::SubpassDependency {
+            src_subpass: vk::SUBPASS_EXTERNAL,
+            dst_subpass: 0,
+            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            src_access_mask: vk::AccessFlags::empty(),
+            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            ..Default::default()
+        };
+
+        let render_pass_info = vk::RenderPassCreateInfo {
+            s_type: StructureType::RENDER_PASS_CREATE_INFO,
+            attachment_count: 1,
+            p_attachments: &color_attachment,
+            subpass_count: 1,
+            p_subpasses: &subpass,
+            dependency_count: 1,
+            p_dependencies: &dependency,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.create_render_pass(&render_pass_info, None)
+        }.unwrap()
+    }
+
+    fn get_viewport(swapchain_extent: &vk::Extent2D) -> vk::Viewport {
+        vk::Viewport {
+            x: 0.0,
+            y: 0.0,
+            width: swapchain_extent.width as f32,
+            height: swapchain_extent.height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }
+    }
+
+    fn get_scissor(swapchain_extent: &vk::Extent2D) -> vk::Rect2D {
+        vk::Rect2D {
+            offset: vk::Offset2D {
+                x: 0,
+                y: 0,
+            },
+            extent: *swapchain_extent,
+        }
+    }
+}
+
+// Commandpool and buffers
+impl VkController {
+    fn create_command_pool(device: &Device, indices: &QueueFamilyIndices) -> vk::CommandPool {
+
+        let pool_info = vk::CommandPoolCreateInfo {
+            s_type: StructureType::COMMAND_POOL_CREATE_INFO,
+            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+            queue_family_index: indices.graphics_family.expect("No graphics family index was set!"),
+            ..Default::default()
+        };
+
+        unsafe {
+            device.create_command_pool(&pool_info, None)
+        }.unwrap()
+    }
+
+    fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool, swapchain_framebuffers: &Vec<vk::Framebuffer>) -> Vec<vk::CommandBuffer> {
+        println!("We are creating {} command buffers! This can maybe hurt performance if incorrect? The tutorial was 1 and not the len of swapchain_framebuffers", swapchain_framebuffers.len());
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+            command_pool: *command_pool,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.allocate_command_buffers(&alloc_info)
+        }.unwrap()
+    }
+
+    fn record_command_buffers(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline) {
+        let begin_info = vk::CommandBufferBeginInfo {
+            s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
+            p_inheritance_info: std::ptr::null(),
+            ..Default::default()
+        };
+
+        unsafe {
+            device.begin_command_buffer(*command_buffer, &begin_info)
+        }.unwrap();
+
+        let clear_color = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+
+        let render_pass_info = vk::RenderPassBeginInfo {
+            s_type: StructureType::RENDER_PASS_BEGIN_INFO,
+            render_pass: *render_pass,
+            framebuffer: swapchain_framebuffers[image_index],
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D {
+                    x: 0,
+                    y: 0,
+                },
+                extent: *swapchain_extent,
+            },
+            clear_value_count: 1,
+            p_clear_values: &clear_color,
+            ..Default::default()
+        };
+
+        let viewport = Self::get_viewport(swapchain_extent);
+        let scissor = Self::get_scissor(swapchain_extent);
+
+        unsafe {
+            device.cmd_begin_render_pass(*command_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *graphics_pipeline);
+            device.cmd_set_viewport(*command_buffer, 0, &[viewport]);
+            device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
+            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+            device.cmd_end_render_pass(*command_buffer);
+            device.end_command_buffer(*command_buffer)
+        }.unwrap();
+    }
+}
+
+// Synchronization
+impl VkController {
+    fn create_sync_objects(device: &Device) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
+        let mut image_available_semaphores = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        let mut render_finished_semaphores = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        let mut in_flight_fences = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+
+        let semaphore_create_info = vk::SemaphoreCreateInfo {
+            s_type: StructureType::SEMAPHORE_CREATE_INFO,
+            ..Default::default()
+        };
+
+        let fence_create_info = vk::FenceCreateInfo {
+            s_type: StructureType::FENCE_CREATE_INFO,
+            flags: vk::FenceCreateFlags::SIGNALED,
+            ..Default::default()
+        };
+
+        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+
+            image_available_semaphores.push(unsafe {
+                device.create_semaphore(&semaphore_create_info, None)
+            }.unwrap());
+
+            render_finished_semaphores.push(unsafe {
+                device.create_semaphore(&semaphore_create_info, None)
+            }.unwrap());
+
+            in_flight_fences.push(unsafe {
+                device.create_fence(&fence_create_info, None)
+            }.unwrap());
+        }
+
+        (image_available_semaphores, render_finished_semaphores, in_flight_fences)
+    }
+}
+
+// Commands
+impl VkController {
+    pub fn draw_frame(&mut self) {
+        if self.is_minimized && !self.frame_buffer_resized {
+            return;
+        }
+
+        unsafe {
+            self.device.wait_for_fences(&[self.in_flight_fences[self.current_frame]], true, u64::MAX).unwrap();
+        }
+
+        let image_index = match unsafe {
+            self.swapchain_loader.acquire_next_image(self.swapchain, u64::MAX, self.image_available_semaphores[self.current_frame], vk::Fence::null())
+        } {
+            Ok((image_index, _)) => image_index,
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
+                self.frame_buffer_resized = false;
+                self.recreate_swapchain();
+                return;
+            },
+            Err(error) => panic!("Failed to acquire next image: {:?}", error),
+        };
+
+        unsafe {
+            self.device.reset_fences(&[self.in_flight_fences[self.current_frame]]).unwrap();
+        }
+
+        unsafe {
+            self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
+        }
+
+        Self::record_command_buffers(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline);
+
+        let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
+        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
+
+        let submit_info = vk::SubmitInfo {
+            s_type: StructureType::SUBMIT_INFO,
+            wait_semaphore_count: wait_semaphores.len() as u32,
+            p_wait_semaphores: wait_semaphores.as_ptr(),
+            p_wait_dst_stage_mask: wait_stages.as_ptr(),
+            command_buffer_count: 1,
+            p_command_buffers: [self.command_buffers[self.current_frame]].as_ptr(),
+            signal_semaphore_count: 1,
+            p_signal_semaphores: signal_semaphores.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device.queue_submit(self.graphics_queue, &[submit_info], self.in_flight_fences[self.current_frame]).unwrap();
+        }
+
+        let swapchains = [self.swapchain];
+
+        let present_info = vk::PresentInfoKHR {
+            s_type: StructureType::PRESENT_INFO_KHR,
+            wait_semaphore_count: 1,
+            p_wait_semaphores: &self.render_finished_semaphores[self.current_frame],
+            swapchain_count: swapchains.len() as u32,
+            p_swapchains: swapchains.as_ptr().cast(),
+            p_image_indices: &image_index,
+            p_results: std::ptr::null_mut(),
+            ..Default::default()
+        };
+
+        match unsafe {
+            self.swapchain_loader.queue_present(self.present_queue, &present_info)
+        } {
+            Ok(_) => (),
+            Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
+                self.frame_buffer_resized = false;
+                self.recreate_swapchain();
+            },
+            Err(error) => panic!("Failed to present queue: {:?}", error),
+        };
+        if self.frame_buffer_resized {
+            self.frame_buffer_resized = false;
+            self.recreate_swapchain();
+        }
+
+        self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT;
+    }
+
+    fn wait_for_device(&self) {
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+        }
+    }
+
+    pub fn recreate_swapchain(&mut self) {
+        if self.window.inner_size().width == 0 || self.window.inner_size().height == 0 {
+            self.is_minimized = true;
+            return;
+        }
+        self.is_minimized = false;
+
+        println!("Recreating swapchain!");
+
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+        }
+
+        self.cleanup_swapchain();
+
+        self.swapchain = Self::create_swapchain(&self.entry, &self.instance, &self.physical_device, &self.surface, &self.window, &self.swapchain_loader);
+        self.swapchain_images = Self::get_swapchain_images(&self.swapchain, &self.swapchain_loader);
+        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format);
+        let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
+        self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent);
+    }
+
+    pub fn cleanup(&mut self) {
+        unsafe {
+            self.wait_for_device();
+
+            self.cleanup_swapchain();
+
+            self.device.destroy_pipeline(self.graphics_pipeline, None);
+            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_render_pass(self.render_pass, None);
+
+            for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+                self.device.destroy_semaphore(self.render_finished_semaphores[i], None);
+                self.device.destroy_semaphore(self.image_available_semaphores[i], None);
+                self.device.destroy_fence(self.in_flight_fences[i], None);
+            }
+
+            self.device.destroy_command_pool(self.command_pool, None);
+            self.device.destroy_device(None);
+
+            if IS_DEBUG_MODE {
+                DebugUtils::new(&self.entry, &self.instance).destroy_debug_utils_messenger(self.debug_messenger.unwrap(), None);
+            }
+
+            Surface::new(&self.entry, &self.instance).destroy_surface(self.surface, None);
+            self.instance.destroy_instance(None);
+        }
     }
 }
