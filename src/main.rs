@@ -1,8 +1,10 @@
-use ash::{vk, Entry};
+use vertex::Vertex;
 use vk_controller::VkController;
 use winit::{event_loop::{EventLoop, ControlFlow}, window::WindowBuilder, event::{Event, WindowEvent}};
+use nalgebra_glm as glm;
 
 mod vk_controller;
+mod vertex;
 
 fn main() {
     let event_loop = EventLoop::new();

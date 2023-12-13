@@ -1,9 +1,11 @@
-use std::{collections::HashSet, fs::read_to_string};
+use std::{collections::HashSet, fs::read_to_string, borrow::Cow};
 
 use ash::{Entry, Instance, vk::{SurfaceKHR, PhysicalDevice, DeviceQueueCreateInfo, DeviceCreateInfo, Queue, SwapchainCreateInfoKHR, ImageView, ImageViewCreateInfo, StructureType, InstanceCreateFlags, InstanceCreateInfo, KhrPortabilityEnumerationFn, self, DebugUtilsMessengerCreateInfoEXT, SwapchainKHR, Image, ComponentMapping, ImageSubresourceRange}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
+
+use crate::vertex::{Vertex, VERTICES};
 
 
 
@@ -40,6 +42,8 @@ pub struct VkController {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
+    vertex_buffer: vk::Buffer,
+    vertex_buffer_memory: vk::DeviceMemory,
     current_frame: usize,
     pub frame_buffer_resized: bool,
     is_minimized: bool,
@@ -97,6 +101,8 @@ impl VkController {
 
         let command_pool = Self::create_command_pool(&device, &queue_families);
 
+        let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
+
         let command_buffers = Self::create_command_buffers(&device, &command_pool, &swapchain_framebuffers);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device);
@@ -126,6 +132,8 @@ impl VkController {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
+            vertex_buffer,
+            vertex_buffer_memory,
             current_frame: 0,
             frame_buffer_resized: false,
             is_minimized: false,
@@ -687,14 +695,17 @@ impl VkController {
             ..Default::default()
         };
 
+
+        let binding_description = Vertex::vertex_input_binding_descriptions();
+        let attribute_descriptions = Vertex::get_attribute_descriptions();
         let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
-        
+
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
             s_type: StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            vertex_binding_description_count: 0,
-            p_vertex_binding_descriptions: std::ptr::null(),
-            vertex_attribute_description_count: 0,
-            p_vertex_attribute_descriptions: std::ptr::null(),
+            vertex_binding_description_count: 1,
+            p_vertex_binding_descriptions: &binding_description,
+            vertex_attribute_description_count: attribute_descriptions.len() as u32,
+            p_vertex_attribute_descriptions: attribute_descriptions.as_ptr(),
             ..Default::default()
         };
 
@@ -944,7 +955,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffers(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline) {
+    fn record_command_buffers(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_buffer: &vk::Buffer) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -980,11 +991,15 @@ impl VkController {
         let viewport = Self::get_viewport(swapchain_extent);
         let scissor = Self::get_scissor(swapchain_extent);
 
+        let vertex_buffers = [*vertex_buffer];
+        let offsets = [0_u64];
+
         unsafe {
             device.cmd_begin_render_pass(*command_buffer, &render_pass_info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *graphics_pipeline);
             device.cmd_set_viewport(*command_buffer, 0, &[viewport]);
             device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
+            device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
             device.cmd_draw(*command_buffer, 3, 1, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)
@@ -1060,7 +1075,7 @@ impl VkController {
             self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
         }
 
-        Self::record_command_buffers(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline);
+        Self::record_command_buffers(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_buffer);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -1148,6 +1163,9 @@ impl VkController {
 
             self.cleanup_swapchain();
 
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
+
             self.device.destroy_pipeline(self.graphics_pipeline, None);
             self.device.destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
@@ -1167,6 +1185,129 @@ impl VkController {
 
             Surface::new(&self.entry, &self.instance).destroy_surface(self.surface, None);
             self.instance.destroy_instance(None);
+        }
+    }
+}
+
+// Buffers
+impl VkController {
+    fn find_memory_type(instance: &Instance, physical_device: &PhysicalDevice, type_filter: u32, properties: vk::MemoryPropertyFlags) -> Result<u32, Cow<'static, str>> {
+        let mem_properties = unsafe {
+            instance.get_physical_device_memory_properties(*physical_device)
+        };
+
+        for (i, mem_type) in mem_properties.memory_types.iter().enumerate() {
+            if type_filter & (1 << i) != 0 && mem_type.property_flags.contains(properties) {
+                return Ok(i as u32);
+            }
+        }
+        Err(Cow::from("Failed to find suitable memory type!"))
+    }
+
+    fn create_vertex_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Buffer, vk::DeviceMemory) {
+        let vertices = VERTICES;
+        let vertices_slice = vertices.as_slice();
+        let size = std::mem::size_of_val(vertices_slice);
+        
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+
+        
+        unsafe {
+            let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+            let vertices_ptr = vertices_slice.as_ptr() as *const u8;
+            std::ptr::copy_nonoverlapping(vertices_ptr, data_ptr, size);
+            device.unmap_memory(staging_buffer_memory);
+        }
+        
+        let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+
+        Self::copy_buffer(device, command_pool, graphics_queue, &staging_buffer, &vertex_buffer, size as u64);
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+        }
+
+        (vertex_buffer, vertex_buffer_memory)
+    }
+
+    fn create_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags) -> (vk::Buffer, vk::DeviceMemory) {
+        let buffer_info = vk::BufferCreateInfo {
+            s_type: StructureType::BUFFER_CREATE_INFO,
+            size,
+            usage,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+
+        let buffer = unsafe {
+            device.create_buffer(&buffer_info, None)
+        }.unwrap();
+        
+        let memory_requirements = unsafe {
+            device.get_buffer_memory_requirements(buffer)
+        };
+
+        let alloc_info = vk::MemoryAllocateInfo {
+            s_type: StructureType::MEMORY_ALLOCATE_INFO,
+            allocation_size: memory_requirements.size,
+            memory_type_index: Self::find_memory_type(instance, physical_device, memory_requirements.memory_type_bits, properties).unwrap(),
+            ..Default::default()
+        };
+
+        println!("Should not allocate memory for many different buffers, but rather have one big buffer and an allocator that uses offsets when binding buffer to memory!");
+        let buffer_memory = unsafe {
+            device.allocate_memory(&alloc_info, None)
+        }.unwrap();
+
+        unsafe {
+            device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap();
+        }
+
+        (buffer, buffer_memory)
+    }
+
+    fn copy_buffer(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, src_buffer: &vk::Buffer, dst_buffer: &vk::Buffer, size: vk::DeviceSize) {
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_pool: *command_pool,
+            command_buffer_count: 1,
+            ..Default::default()
+        };
+
+        let command_buffer = unsafe {
+            device.allocate_command_buffers(&alloc_info).unwrap()[0]
+        };
+
+        let copy_region = vk::BufferCopy {
+            src_offset: 0,
+            dst_offset: 0,
+            size,
+        };
+
+        let begin_info = vk::CommandBufferBeginInfo {
+            s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
+        unsafe {
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
+            device.cmd_copy_buffer(command_buffer, *src_buffer, *dst_buffer, &[copy_region]);
+            device.end_command_buffer(command_buffer).unwrap();
+        }
+
+        let submit_info = vk::SubmitInfo {
+            s_type: StructureType::SUBMIT_INFO,
+            command_buffer_count: 1,
+            p_command_buffers: &command_buffer,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.queue_submit(*graphics_queue, &[submit_info], vk::Fence::null()).unwrap();
+            device.queue_wait_idle(*graphics_queue).unwrap();
+            device.free_command_buffers(*command_pool, &[command_buffer]);
         }
     }
 }
