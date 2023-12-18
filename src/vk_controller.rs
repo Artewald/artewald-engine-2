@@ -1,21 +1,20 @@
-use std::{collections::HashSet, fs::read_to_string, borrow::Cow};
+use std::{collections::HashSet, fs::read_to_string, borrow::Cow, time::Instant};
 
 use ash::{Entry, Instance, vk::{SurfaceKHR, PhysicalDevice, DeviceQueueCreateInfo, DeviceCreateInfo, Queue, SwapchainCreateInfoKHR, ImageView, ImageViewCreateInfo, StructureType, InstanceCreateFlags, InstanceCreateInfo, KhrPortabilityEnumerationFn, self, DebugUtilsMessengerCreateInfoEXT, SwapchainKHR, Image, ComponentMapping, ImageSubresourceRange}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
+use nalgebra_glm as glm;
 
-use crate::vertex::{Vertex, VERTICES};
+use crate::{vertex::{Vertex, VERTICES, INDICES}, graphics_objects::UniformBufferObject};
 
 
 
 #[cfg(debug_assertions)]
 const IS_DEBUG_MODE: bool = true;
-#[cfg(debug_assertions)]
-const VALIDATION_LAYERS: [&str; 1] = ["VK_LAYER_KHRONOS_validation"];
-
 #[cfg(not(debug_assertions))]
 const IS_DEBUG_MODE: bool = false;
+
 
 pub struct VkController {
     window: Window,
@@ -35,6 +34,7 @@ pub struct VkController {
     swapchain_image_views: Vec<ImageView>,
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
+    descriptor_set_layout: vk::DescriptorSetLayout,
     graphics_pipeline: vk::Pipeline,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
@@ -44,14 +44,21 @@ pub struct VkController {
     in_flight_fences: Vec<vk::Fence>,
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
+    index_buffer: vk::Buffer,
+    index_buffer_memory: vk::DeviceMemory,
+    uniform_buffers: Vec<vk::Buffer>,
+    uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    uniform_buffers_mapping: Vec<*mut std::ffi::c_void>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
     is_minimized: bool,
+    start_time: Instant,
 }
 
 impl VkController {
     const DEVICE_EXTENSIONS: [*const i8; 1] = [Swapchain::name().as_ptr()];
     const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
 
     pub fn new(window: Window, application_name: &str) -> Self {
         let entry = Entry::linked();
@@ -63,18 +70,17 @@ impl VkController {
         };
         let instance = Self::create_instance(&entry, application_name, &window, debug_messenger_create_info.as_ref());
 
-        
         let mut debug_messenger = None;
         if IS_DEBUG_MODE {
             debug_messenger = Some(Self::setup_debug_messenger(&entry, &instance, debug_messenger_create_info.unwrap()));
         }
 
         let surface = Self::create_surface(&entry, &instance, &window);
-        
+
         let physical_device = Self::pick_physical_device(&entry, &instance, &surface);
 
         let queue_families = Self::find_queue_families(&entry, &instance, &physical_device, &surface);
-
+        
         let device = Self::create_logical_device(&entry, &instance, &physical_device, &surface);
 
         let (graphics_queue, present_queue) = Self::create_graphics_and_present_queue(&device, &queue_families);
@@ -91,7 +97,9 @@ impl VkController {
 
         let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format);
 
-        let pipeline_layout = Self::create_pipeline_layout(&device);
+        let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
+
+        let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout);
 
         let render_pass = Self::create_render_pass(swapchain_image_format, &device);
 
@@ -103,7 +111,11 @@ impl VkController {
 
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
-        let command_buffers = Self::create_command_buffers(&device, &command_pool, &swapchain_framebuffers);
+        let (index_buffer, index_buffer_memory) = Self::create_index_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
+
+        let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapping) = Self::create_uniform_buffers(&instance, &physical_device, &device);
+
+        let command_buffers = Self::create_command_buffers(&device, &command_pool);
 
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device);
 
@@ -125,6 +137,7 @@ impl VkController {
             swapchain_image_views,
             pipeline_layout,
             render_pass,
+            descriptor_set_layout,
             graphics_pipeline,
             swapchain_framebuffers,
             command_pool,
@@ -134,9 +147,15 @@ impl VkController {
             in_flight_fences,
             vertex_buffer,
             vertex_buffer_memory,
+            index_buffer,
+            index_buffer_memory,
+            uniform_buffers,
+            uniform_buffers_memory,
+            uniform_buffers_mapping,
             current_frame: 0,
             frame_buffer_resized: false,
             is_minimized: false,
+            start_time: Instant::now(),
         }
     }
 }
@@ -175,17 +194,14 @@ impl VkController {
         create_info.flags |= InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
 
         if IS_DEBUG_MODE {
-            let validation_layers = VALIDATION_LAYERS;
-
-            create_info.enabled_layer_count = validation_layers.len() as u32;
-            create_info.pp_enabled_layer_names = validation_layers.as_ptr().cast();
+            create_info.enabled_layer_count = Self::VALIDATION_LAYERS.len() as u32;
+            create_info.pp_enabled_layer_names = Self::VALIDATION_LAYERS.as_ptr().cast();
             
             create_info.p_next = debug_create_info.unwrap() as *const _ as *const std::ffi::c_void;
         } else {
             create_info.enabled_layer_count = 0;
             create_info.p_next = std::ptr::null();
         }
-
 
         unsafe {
             entry.create_instance(&create_info, None)
@@ -195,7 +211,7 @@ impl VkController {
     fn check_validation_layer_support(entry: &Entry) -> bool {
         let available_layers = entry.enumerate_instance_layer_properties().unwrap();
 
-        let validation_layers = VALIDATION_LAYERS;
+        let validation_layers = Self::VALIDATION_LAYERS;
 
         for layer_name in validation_layers {
             let mut layer_found = false;
@@ -354,6 +370,7 @@ impl VkController {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
 struct QueueFamilyIndices {
     graphics_family: Option<u32>,
     present_family: Option<u32>,
@@ -462,7 +479,6 @@ impl VkController {
         // } else {
         //     device_create_info.enabled_layer_count = 0;
         // }
-
         
         unsafe {
             instance.create_device(*physical_device, &device_create_info, None)
@@ -836,11 +852,12 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_pipeline_layout(device: &Device) -> vk::PipelineLayout {
+    fn create_pipeline_layout(device: &Device, desciptor_set_layout: &vk::DescriptorSetLayout) -> vk::PipelineLayout {
+        let descriptor_set_layouts = [*desciptor_set_layout];
         let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
             s_type: StructureType::PIPELINE_LAYOUT_CREATE_INFO,
-            set_layout_count: 0,
-            p_set_layouts: std::ptr::null(),
+            set_layout_count: 1,
+            p_set_layouts: descriptor_set_layouts.as_ptr(),
             push_constant_range_count: 0,
             p_push_constant_ranges: std::ptr::null(),
             ..Default::default()
@@ -940,8 +957,8 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool, swapchain_framebuffers: &Vec<vk::Framebuffer>) -> Vec<vk::CommandBuffer> {
-        println!("We are creating {} command buffers! This can maybe hurt performance if incorrect? The tutorial was 1 and not the len of swapchain_framebuffers", swapchain_framebuffers.len());
+    fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool) -> Vec<vk::CommandBuffer> {
+
         let alloc_info = vk::CommandBufferAllocateInfo {
             s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
             command_pool: *command_pool,
@@ -955,7 +972,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffers(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_buffer: &vk::Buffer) {
+    fn record_command_buffers(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_buffer: &vk::Buffer, index_buffer: &vk::Buffer) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -1000,7 +1017,8 @@ impl VkController {
             device.cmd_set_viewport(*command_buffer, 0, &[viewport]);
             device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
-            device.cmd_draw(*command_buffer, 3, 1, 0, 0);
+            device.cmd_bind_index_buffer(*command_buffer, *index_buffer, 0, vk::IndexType::UINT32);
+            device.cmd_draw_indexed(*command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)
         }.unwrap();
@@ -1047,6 +1065,7 @@ impl VkController {
 // Commands
 impl VkController {
     pub fn draw_frame(&mut self) {
+
         if self.is_minimized && !self.frame_buffer_resized {
             return;
         }
@@ -1075,11 +1094,15 @@ impl VkController {
             self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
         }
 
-        Self::record_command_buffers(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_buffer);
+        Self::record_command_buffers(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_buffer, &self.index_buffer);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
+
+        let command_buffers = [self.command_buffers[self.current_frame]];
+
+        self.update_uniform_buffer(self.current_frame);
 
         let submit_info = vk::SubmitInfo {
             s_type: StructureType::SUBMIT_INFO,
@@ -1087,7 +1110,7 @@ impl VkController {
             p_wait_semaphores: wait_semaphores.as_ptr(),
             p_wait_dst_stage_mask: wait_stages.as_ptr(),
             command_buffer_count: 1,
-            p_command_buffers: [self.command_buffers[self.current_frame]].as_ptr(),
+            p_command_buffers: command_buffers.as_ptr(),
             signal_semaphore_count: 1,
             p_signal_semaphores: signal_semaphores.as_ptr(),
             ..Default::default()
@@ -1163,12 +1186,24 @@ impl VkController {
 
             self.cleanup_swapchain();
 
-            self.device.destroy_buffer(self.vertex_buffer, None);
-            self.device.free_memory(self.vertex_buffer_memory, None);
+            for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+                unsafe {
+                    self.device.destroy_buffer(self.uniform_buffers[i], None);
+                    self.device.free_memory(self.uniform_buffers_memory[i], None);
+                }
+            }
+
+            self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
 
             self.device.destroy_pipeline(self.graphics_pipeline, None);
             self.device.destroy_pipeline_layout(self.pipeline_layout, None);
             self.device.destroy_render_pass(self.render_pass, None);
+            
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
+
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
 
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
                 self.device.destroy_semaphore(self.render_finished_semaphores[i], None);
@@ -1229,6 +1264,32 @@ impl VkController {
         }
 
         (vertex_buffer, vertex_buffer_memory)
+    }
+
+    fn create_index_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Buffer, vk::DeviceMemory) {
+        let indices = INDICES;
+        let indices_slice = indices.as_slice();
+        let size = std::mem::size_of_val(indices_slice);
+        
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+        
+        unsafe {
+            let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+            let indices_ptr = indices_slice.as_ptr() as *const u8;
+            std::ptr::copy_nonoverlapping(indices_ptr, data_ptr, size);
+            device.unmap_memory(staging_buffer_memory);
+        }
+        
+        let (index_buffer, index_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+
+        Self::copy_buffer(device, command_pool, graphics_queue, &staging_buffer, &index_buffer, size as u64);
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+        }
+
+        (index_buffer, index_buffer_memory)
     }
 
     fn create_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags) -> (vk::Buffer, vk::DeviceMemory) {
@@ -1309,5 +1370,67 @@ impl VkController {
             device.queue_wait_idle(*graphics_queue).unwrap();
             device.free_command_buffers(*command_pool, &[command_buffer]);
         }
+    }
+
+    fn create_uniform_buffers(instance: &Instance, physical_device: &PhysicalDevice, device: &Device) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut std::ffi::c_void>) {
+        let buffer_size = std::mem::size_of::<UniformBufferObject>();
+
+        let mut uniform_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        let mut uniform_buffers_memory = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        let mut uniform_buffers_mapped = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        
+        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            let (uniform_buffer, uniform_buffer_memory) = Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+            uniform_buffers.push(uniform_buffer);
+            uniform_buffers_memory.push(uniform_buffer_memory);
+
+            let data_ptr = unsafe {
+                device.map_memory(uniform_buffer_memory, 0, buffer_size as u64, vk::MemoryMapFlags::empty()).unwrap()
+            };
+            uniform_buffers_mapped.push(data_ptr);
+        }
+
+        (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped)
+    }
+
+    fn update_uniform_buffer(&mut self, current_image: usize) {
+        let elapsed = self.start_time.elapsed().as_secs_f32();
+
+        let mut ubo = UniformBufferObject {
+            model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 0.0)),
+            proj: glm::perspective(self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        };
+        ubo.proj[(1, 1)] *= -1.0;
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(&ubo as *const UniformBufferObject as *const std::ffi::c_void, self.uniform_buffers_mapping[current_image], std::mem::size_of::<UniformBufferObject>());
+        }
+    }
+}
+
+// Other
+impl VkController {
+    fn create_descriptor_set_layout(device: &Device) -> vk::DescriptorSetLayout {
+        let ubo_layout_binding = vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: std::ptr::null(),
+        };
+
+        let layout_bindings = [ubo_layout_binding];
+
+        let layout_info = vk::DescriptorSetLayoutCreateInfo {
+            s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            binding_count: layout_bindings.len() as u32,
+            p_bindings: layout_bindings.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe {
+            device.create_descriptor_set_layout(&layout_info, None)
+        }.unwrap()
     }
 }

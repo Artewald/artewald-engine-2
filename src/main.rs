@@ -5,6 +5,7 @@ use nalgebra_glm as glm;
 
 mod vk_controller;
 mod vertex;
+mod graphics_objects;
 
 fn main() {
     let event_loop = EventLoop::new();
