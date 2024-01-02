@@ -1254,7 +1254,6 @@ impl VkController {
         let size = std::mem::size_of_val(vertices_slice);
         
         let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
-
         
         unsafe {
             let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
@@ -1404,10 +1403,9 @@ impl VkController {
 
     fn update_uniform_buffer(&mut self, current_image: usize) {
         let elapsed = self.start_time.elapsed().as_secs_f32();
-
         let mut ubo = UniformBufferObject {
             model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 0.0)),
+            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
             proj: glm::perspective(self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
         };
         ubo.proj[(1, 1)] *= -1.0;

@@ -1,6 +1,6 @@
 use vertex::Vertex;
 use vk_controller::VkController;
-use winit::{event_loop::{EventLoop, ControlFlow}, window::WindowBuilder, event::{Event, WindowEvent}};
+use winit::{event_loop::{EventLoop, ControlFlow}, window::WindowBuilder, event::{Event, WindowEvent, ElementState, KeyboardInput}};
 use nalgebra_glm as glm;
 
 mod vk_controller;
@@ -22,11 +22,29 @@ fn main() {
         let mut close = false;
 
         match event {
-            Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-                *control_flow = ControlFlow::Exit;
-            },
-            Event::WindowEvent { event: WindowEvent::Resized(_), .. } => {
-                vk_controller.frame_buffer_resized = true;
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    *control_flow = ControlFlow::Exit;
+                },
+                WindowEvent::Resized(_) => {
+                    vk_controller.frame_buffer_resized = true;
+                },
+                WindowEvent::KeyboardInput {
+                    input: KeyboardInput {
+                        state: ElementState::Pressed,
+                        virtual_keycode: Some(keycode),
+                        ..
+                    },
+                    ..
+                } => {
+                    match keycode {
+                        winit::event::VirtualKeyCode::Escape => {
+                            *control_flow = ControlFlow::Exit;
+                        },
+                        _ => {}
+                    }
+                },
+                _ => {}
             },
             Event::LoopDestroyed => {
                 vk_controller.cleanup();
