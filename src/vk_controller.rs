@@ -55,6 +55,8 @@ pub struct VkController {
     start_time: Instant,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    texture_image: vk::Image,
+    texture_image_memory: vk::DeviceMemory,
 }
 
 impl VkController {
@@ -111,6 +113,8 @@ impl VkController {
 
         let command_pool = Self::create_command_pool(&device, &queue_families);
 
+        let (texture_image, texture_image_memory) = Self::create_texture_image(&instance, &physical_device, &device, );
+
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
         let (index_buffer, index_buffer_memory) = Self::create_index_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
@@ -164,6 +168,8 @@ impl VkController {
             start_time: Instant::now(),
             descriptor_pool,
             descriptor_sets,
+            texture_image,
+            texture_image_memory,
         }
     }
 }
@@ -1503,5 +1509,72 @@ impl VkController {
         }
 
         descriptor_sets
+    }
+}
+
+// Images
+impl VkController {
+    fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device) -> (vk::Image, vk::DeviceMemory) {
+        let binding = image::open("./assets/images/texture.jpg").unwrap();
+        println!("Borrowing the image as rgba32f, but the image is actually rgb8. This could be a problem!");
+        let image = binding.as_rgba32f().unwrap();
+        let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
+        
+        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
+
+        unsafe {
+            let data_ptr = device.map_memory(staging_buffer_memory, 0, image_size, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+            std::ptr::copy_nonoverlapping(image.as_ptr() as *const u8, data_ptr, image_size as usize);
+            device.unmap_memory(staging_buffer_memory);
+        };
+        
+        Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL)
+    }
+
+    fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags,) -> (vk::Image, vk::DeviceMemory) {
+        let image_info = vk::ImageCreateInfo {
+            s_type: StructureType::IMAGE_CREATE_INFO,
+            image_type: vk::ImageType::TYPE_2D,
+            extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+            mip_levels: 1,
+            array_layers: 1,
+            format,
+            tiling,
+            initial_layout: vk::ImageLayout::UNDEFINED,
+            usage,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            samples: vk::SampleCountFlags::TYPE_1,
+            flags: vk::ImageCreateFlags::empty(),
+            ..Default::default()
+        };
+
+        let image = unsafe {
+            device.create_image(&image_info, None)
+        }.unwrap();
+
+        let mem_requirements = unsafe {
+            device.get_image_memory_requirements(image)
+        };
+
+        let alloc_info = vk::MemoryAllocateInfo {
+            s_type: StructureType::MEMORY_ALLOCATE_INFO,
+            allocation_size: mem_requirements.size,
+            memory_type_index: Self::find_memory_type(instance, physical_device, mem_requirements.memory_type_bits, properties).unwrap(),
+            ..Default::default()
+        };
+
+        let image_memory = unsafe {
+            device.allocate_memory(&alloc_info, None)
+        }.unwrap();
+
+        unsafe {
+            device.bind_image_memory(image, image_memory, 0).unwrap();
+        }
+
+        (image, image_memory)
     }
 }
