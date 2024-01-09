@@ -113,7 +113,7 @@ impl VkController {
 
         let command_pool = Self::create_command_pool(&device, &queue_families);
 
-        let (texture_image, texture_image_memory) = Self::create_texture_image(&instance, &physical_device, &device, );
+        let (texture_image, texture_image_memory) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
@@ -1201,6 +1201,9 @@ impl VkController {
 
             self.cleanup_swapchain();
 
+            self.device.destroy_image(self.texture_image, None);
+            self.device.free_memory(self.texture_image_memory, None);
+
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
                 self.device.destroy_buffer(self.uniform_buffers[i], None);
                 self.device.free_memory(self.uniform_buffers_memory[i], None);
@@ -1270,7 +1273,7 @@ impl VkController {
         
         let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
-        Self::copy_buffer(device, command_pool, graphics_queue, &staging_buffer, &vertex_buffer, size as u64);
+        Self::copy_buffer(&staging_buffer, &vertex_buffer, size as u64, device, command_pool, graphics_queue);
 
         unsafe {
             device.destroy_buffer(staging_buffer, None);
@@ -1296,7 +1299,7 @@ impl VkController {
         
         let (index_buffer, index_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
-        Self::copy_buffer(device, command_pool, graphics_queue, &staging_buffer, &index_buffer, size as u64);
+        Self::copy_buffer(&staging_buffer, &index_buffer, size as u64, device, command_pool, graphics_queue);
 
         unsafe {
             device.destroy_buffer(staging_buffer, None);
@@ -1342,49 +1345,6 @@ impl VkController {
         (buffer, buffer_memory)
     }
 
-    fn copy_buffer(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, src_buffer: &vk::Buffer, dst_buffer: &vk::Buffer, size: vk::DeviceSize) {
-        let alloc_info = vk::CommandBufferAllocateInfo {
-            s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
-            level: vk::CommandBufferLevel::PRIMARY,
-            command_pool: *command_pool,
-            command_buffer_count: 1,
-            ..Default::default()
-        };
-
-        let command_buffer = unsafe {
-            device.allocate_command_buffers(&alloc_info).unwrap()[0]
-        };
-
-        let copy_region = vk::BufferCopy {
-            src_offset: 0,
-            dst_offset: 0,
-            size,
-        };
-
-        let begin_info = vk::CommandBufferBeginInfo {
-            s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
-            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-            ..Default::default()
-        };
-        unsafe {
-            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
-            device.cmd_copy_buffer(command_buffer, *src_buffer, *dst_buffer, &[copy_region]);
-            device.end_command_buffer(command_buffer).unwrap();
-        }
-
-        let submit_info = vk::SubmitInfo {
-            s_type: StructureType::SUBMIT_INFO,
-            command_buffer_count: 1,
-            p_command_buffers: &command_buffer,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.queue_submit(*graphics_queue, &[submit_info], vk::Fence::null()).unwrap();
-            device.queue_wait_idle(*graphics_queue).unwrap();
-            device.free_command_buffers(*command_pool, &[command_buffer]);
-        }
-    }
 
     fn create_uniform_buffers(instance: &Instance, physical_device: &PhysicalDevice, device: &Device) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut std::ffi::c_void>) {
         let buffer_size = std::mem::size_of::<UniformBufferObject>();
@@ -1514,7 +1474,7 @@ impl VkController {
 
 // Images
 impl VkController {
-    fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device) -> (vk::Image, vk::DeviceMemory) {
+    fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Image, vk::DeviceMemory) {
         let binding = image::open("./assets/images/texture.jpg").unwrap();
         println!("Borrowing the image as rgba32f, but the image is actually rgb8. This could be a problem!");
         let image = binding.as_rgba32f().unwrap();
@@ -1527,8 +1487,19 @@ impl VkController {
             std::ptr::copy_nonoverlapping(image.as_ptr() as *const u8, data_ptr, image_size as usize);
             device.unmap_memory(staging_buffer_memory);
         };
-        
-        Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL)
+
+        let (vk_image, device_memory) = Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+
+        Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+        Self::copy_buffer_to_image(&staging_buffer, &vk_image, image.dimensions().0, image.dimensions().1, device, command_pool, graphics_queue);
+        Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+
+        unsafe {
+            device.destroy_buffer(staging_buffer, None);
+            device.free_memory(staging_buffer_memory, None);
+        }
+
+        (vk_image, device_memory)
     }
 
     fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags,) -> (vk::Image, vk::DeviceMemory) {
@@ -1576,5 +1547,148 @@ impl VkController {
         }
 
         (image, image_memory)
+    }
+
+    fn transition_image_layout(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout) {
+        let command_buffer = Self::begin_single_time_command(device, command_pool);
+
+        let mut source_stage = match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
+            vk::ImageLayout::UNDEFINED => vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::PipelineStageFlags::TRANSFER,
+            _ => panic!("Unsupported layout transition!"),
+        };
+        let mut destination_stage = match new_layout {
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::PipelineStageFlags::TRANSFER,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::PipelineStageFlags::FRAGMENT_SHADER,
+            _ => panic!("Unsupported layout transition!"),
+        };
+
+        let barrier = vk::ImageMemoryBarrier {
+            s_type: StructureType::IMAGE_MEMORY_BARRIER,
+            old_layout,
+            new_layout,
+            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            image: *image,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
+                vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+                _ => panic!("Unsupported layout transition!"),
+            },
+            dst_access_mask: match new_layout {
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
+                _ => panic!("Unsupported layout transition!"),
+            },
+            ..Default::default()
+        };
+
+        unsafe {
+            device.cmd_pipeline_barrier(command_buffer, source_stage, destination_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+        }
+
+        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
+    }
+}
+
+// Buffers
+impl VkController {
+    fn begin_single_time_command(device: &Device, command_pool: &vk::CommandPool) -> vk::CommandBuffer {
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_pool: *command_pool,
+            command_buffer_count: 1,
+            ..Default::default()
+        };
+
+        let command_buffer = unsafe {
+            device.allocate_command_buffers(&alloc_info).unwrap()[0]
+        };
+
+        let begin_info = vk::CommandBufferBeginInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
+        }
+
+        command_buffer
+    }
+
+    fn end_single_time_command(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            device.end_command_buffer(command_buffer).unwrap();
+        }
+
+        let submit_info = vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            command_buffer_count: 1,
+            p_command_buffers: &command_buffer,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.queue_submit(*graphics_queue, &[submit_info], vk::Fence::null()).unwrap();
+            device.queue_wait_idle(*graphics_queue).unwrap();
+            device.free_command_buffers(*command_pool, &[command_buffer]);
+        }
+    }
+
+    fn copy_buffer(src_buffer: &vk::Buffer, dst_buffer: &vk::Buffer, size: vk::DeviceSize, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
+        let command_buffer = Self::begin_single_time_command(device, command_pool);
+
+        let copy_region = vk::BufferCopy {
+            size,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.cmd_copy_buffer(command_buffer, *src_buffer, *dst_buffer, &[copy_region]);
+        }
+
+        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
+    }
+
+    fn copy_buffer_to_image(src_buffer: &vk::Buffer, dst_image: &vk::Image, width: u32, height: u32, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
+        let command_buffer = Self::begin_single_time_command(device, command_pool);
+
+        let region = vk::BufferImageCopy {
+            buffer_offset: 0,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: vk::Offset3D {
+                x: 0,
+                y: 0,
+                z: 0,
+            },
+            image_extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        };
+
+        unsafe {
+            device.cmd_copy_buffer_to_image(command_buffer, *src_buffer, *dst_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
+        }
+
+        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
     }
 }
