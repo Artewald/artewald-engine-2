@@ -119,7 +119,7 @@ impl VkController {
 
         let texture_image_view = Self::create_texture_image_view(&device, &texture_image);
 
-        let texture_sampler = Self::create_texture_sampler(&device);
+        let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device);
 
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
@@ -133,7 +133,7 @@ impl VkController {
 
         let descriptor_pool = Self::create_descriptor_pool(&device);
 
-        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_buffers, &descriptor_set_layout);
+        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_buffers, &descriptor_set_layout, &texture_image_view, &texture_sampler);
 
         Self {
             window,
@@ -642,8 +642,8 @@ impl VkController {
     fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
-        for i in 0..swapchain_image_views.len() {
-            swapchain_image_views[i] = Self::create_image_view(device, &swapchain_images[i], swapchain_image_format);
+        for i in 0..swapchain_images.len() {
+            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format));
         }
 
         swapchain_image_views
@@ -1385,7 +1385,15 @@ impl VkController {
             p_immutable_samplers: std::ptr::null(),
         };
 
-        let layout_bindings = [ubo_layout_binding];
+        let sampler_layout_binding = vk::DescriptorSetLayoutBinding {
+            binding: 1,
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+            p_immutable_samplers: std::ptr::null(),
+        };
+
+        let layout_bindings = [ubo_layout_binding, sampler_layout_binding];
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo {
             s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1405,6 +1413,10 @@ impl VkController {
                 ty: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
             },
+            vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            }
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo {
@@ -1420,7 +1432,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, uniform_buffers: &Vec<vk::Buffer>, descriptor_set_layout: &vk::DescriptorSetLayout) -> Vec<vk::DescriptorSet> {
+    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, uniform_buffers: &Vec<vk::Buffer>, descriptor_set_layout: &vk::DescriptorSetLayout, texture_image_view: &vk::ImageView, texture_sampler: &vk::Sampler) -> Vec<vk::DescriptorSet> {
         let layouts = vec![*descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
         let alloc_info = vk::DescriptorSetAllocateInfo {
             s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1442,21 +1454,40 @@ impl VkController {
                 ..Default::default()
             };
 
-            let descriptor_write = vk::WriteDescriptorSet {
-                s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                dst_set: descriptor_sets[i],
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-                p_buffer_info: &buffer_info,
-                p_image_info: std::ptr::null(),
-                p_texel_buffer_view: std::ptr::null(),
-                ..Default::default()
+            let image_info = vk::DescriptorImageInfo {
+                sampler: *texture_sampler,
+                image_view: *texture_image_view,
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             };
 
+            let descriptor_writes = [
+                vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                    dst_set: descriptor_sets[i],
+                    dst_binding: 0,
+                    dst_array_element: 0,
+                    descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 1,
+                    p_buffer_info: &buffer_info,
+                    p_image_info: std::ptr::null(),
+                    p_texel_buffer_view: std::ptr::null(),
+                    ..Default::default()
+                },
+                vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                    dst_set: descriptor_sets[i],
+                    dst_binding: 1,
+                    dst_array_element: 0,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 1,
+                    p_image_info: &image_info,
+                    p_texel_buffer_view: std::ptr::null(),
+                    ..Default::default()
+                }
+            ];
+
             unsafe {
-                device.update_descriptor_sets(&vec![descriptor_write], &vec![]);
+                device.update_descriptor_sets(&descriptor_writes, &vec![]);
             }
         }
 
@@ -1468,8 +1499,7 @@ impl VkController {
 impl VkController {
     fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Image, vk::DeviceMemory) {
         let binding = image::open("./assets/images/texture.jpg").unwrap();
-        println!("Borrowing the image as rgba32f, but the image is actually rgb8. This could be a problem!");
-        let image = binding.as_rgba32f().unwrap();
+        let image = binding.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
         
         let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);

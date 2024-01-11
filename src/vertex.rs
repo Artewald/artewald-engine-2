@@ -4,10 +4,10 @@ use nalgebra_glm as glm;
 
 
 pub const VERTICES: [Vertex; 4] = [
-    Vertex::new(glm::Vec2::new(-0.5, -0.5), glm::Vec3::new(1.0, 0.0, 0.0)),
-    Vertex::new(glm::Vec2::new(0.5, -0.5), glm::Vec3::new(0.0, 1.0, 0.0)),
-    Vertex::new(glm::Vec2::new(0.5, 0.5), glm::Vec3::new(0.0, 0.0, 1.0)),
-    Vertex::new(glm::Vec2::new(-0.5, 0.5), glm::Vec3::new(1.0, 1.0, 1.0)),
+    Vertex::new(glm::Vec2::new(-0.5, -0.5), glm::Vec3::new(1.0, 0.0, 0.0), glm::Vec2::new(1.0, 0.0)),
+    Vertex::new(glm::Vec2::new(0.5, -0.5), glm::Vec3::new(0.0, 1.0, 0.0), glm::Vec2::new(0.0, 0.0)),
+    Vertex::new(glm::Vec2::new(0.5, 0.5), glm::Vec3::new(0.0, 0.0, 1.0), glm::Vec2::new(0.0, 1.0)),
+    Vertex::new(glm::Vec2::new(-0.5, 0.5), glm::Vec3::new(1.0, 1.0, 1.0), glm::Vec2::new(1.0, 1.0)),
 ];
 
 pub const INDICES: [u32; 6] = [0, 1, 2, 2, 3, 0];
@@ -17,13 +17,15 @@ pub const INDICES: [u32; 6] = [0, 1, 2, 2, 3, 0];
 pub struct Vertex {
     pub position: glm::Vec2,
     pub color: glm::Vec3,
+    pub tex_coord: glm::Vec2,
 }
 
 impl Vertex {
-    pub const fn new(position: glm::Vec2, color: glm::Vec3) -> Self {
+    pub const fn new(position: glm::Vec2, color: glm::Vec3, tex_coord: glm::Vec2) -> Self {
         Self {
             position,
             color,
+            tex_coord,
         }
     }
 
@@ -51,6 +53,13 @@ impl Vertex {
             offset: offset_of!(Self, color) as u32,
         };
 
-        vec![position_attribute_description, color_attribute_description]
+        let tex_coord_attribute_description = vk::VertexInputAttributeDescription {
+            binding: 0,
+            location: 2,
+            format: vk::Format::R32G32_SFLOAT,
+            offset: offset_of!(Self, tex_coord) as u32,
+        };
+
+        vec![position_attribute_description, color_attribute_description, tex_coord_attribute_description]
     }
 }
