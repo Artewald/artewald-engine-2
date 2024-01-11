@@ -57,6 +57,8 @@ pub struct VkController {
     descriptor_sets: Vec<vk::DescriptorSet>,
     texture_image: vk::Image,
     texture_image_memory: vk::DeviceMemory,
+    texture_image_view: vk::ImageView,
+    texture_sampler: vk::Sampler,
 }
 
 impl VkController {
@@ -115,6 +117,10 @@ impl VkController {
 
         let (texture_image, texture_image_memory) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
+        let texture_image_view = Self::create_texture_image_view(&device, &texture_image);
+
+        let texture_sampler = Self::create_texture_sampler(&device);
+
         let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
         let (index_buffer, index_buffer_memory) = Self::create_index_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
@@ -170,6 +176,8 @@ impl VkController {
             descriptor_sets,
             texture_image,
             texture_image_memory,
+            texture_image_view,
+            texture_sampler,
         }
     }
 }
@@ -334,8 +342,11 @@ impl VkController {
     fn is_device_suitable(entry: &Entry, instance: &Instance, device: &PhysicalDevice, surface: &SurfaceKHR) -> bool {
         let indices = Self::find_queue_families(entry, instance, device, surface);
         let swapchain_support = Self::query_swapchain_support(entry, instance, device, surface);
+        let supported_features = unsafe {
+            instance.get_physical_device_features(*device)
+        };
 
-        indices.is_complete() && Self::check_device_extension_support(instance, device) && Self::is_swapchain_adequate(&swapchain_support)
+        indices.is_complete() && Self::check_device_extension_support(instance, device) && Self::is_swapchain_adequate(&swapchain_support) && supported_features.sampler_anisotropy == vk::TRUE
     }
 
     fn check_device_extension_support(instance: &Instance, device: &PhysicalDevice) -> bool {
@@ -471,6 +482,7 @@ impl VkController {
         }
 
         let device_features = vk::PhysicalDeviceFeatures {
+            sampler_anisotropy: vk::TRUE,
             ..Default::default()
         };
 
@@ -630,31 +642,8 @@ impl VkController {
     fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
-        for swapchain_image in swapchain_images.iter() {
-            let create_info = ImageViewCreateInfo {
-                s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
-                image: *swapchain_image,
-                view_type: vk::ImageViewType::TYPE_2D,
-                format: swapchain_image_format,
-                components: ComponentMapping {
-                    r: vk::ComponentSwizzle::IDENTITY,
-                    g: vk::ComponentSwizzle::IDENTITY,
-                    b: vk::ComponentSwizzle::IDENTITY,
-                    a: vk::ComponentSwizzle::IDENTITY,
-                },
-                subresource_range: ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-
-            swapchain_image_views.push(unsafe {
-                device.create_image_view(&create_info, None)
-            }.unwrap());
+        for i in 0..swapchain_image_views.len() {
+            swapchain_image_views[i] = Self::create_image_view(device, &swapchain_images[i], swapchain_image_format);
         }
 
         swapchain_image_views
@@ -1201,6 +1190,9 @@ impl VkController {
 
             self.cleanup_swapchain();
 
+            self.device.destroy_sampler(self.texture_sampler, None);
+            self.device.destroy_image_view(self.texture_image_view, None);
+
             self.device.destroy_image(self.texture_image, None);
             self.device.free_memory(self.texture_image_memory, None);
 
@@ -1595,6 +1587,62 @@ impl VkController {
         }
 
         Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
+    }
+
+    fn create_image_view(device: &Device, image: &vk::Image, format: vk::Format) -> vk::ImageView {
+        let view_info = vk::ImageViewCreateInfo {
+            s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
+            image: *image,
+            view_type: vk::ImageViewType::TYPE_2D,
+            format,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            ..Default::default()
+        };
+
+        unsafe {
+            device.create_image_view(&view_info, None)
+        }.unwrap()
+    }
+
+    fn create_texture_image_view(device: &Device, image: &vk::Image) -> vk::ImageView {
+        let texture_image_view = Self::create_image_view(device, image, vk::Format::R8G8B8A8_SRGB);
+
+        texture_image_view
+    }
+
+    fn create_texture_sampler(device: &Device, instance: &Instance, physical_device: &PhysicalDevice) -> vk::Sampler {
+        let max_anisotropy = unsafe {
+            instance.get_physical_device_properties(*physical_device).limits.max_sampler_anisotropy
+        };
+        let sampler_info = vk::SamplerCreateInfo {
+            s_type: StructureType::SAMPLER_CREATE_INFO,
+            mag_filter: vk::Filter::LINEAR,
+            min_filter: vk::Filter::LINEAR,
+            address_mode_u: vk::SamplerAddressMode::REPEAT,
+            address_mode_v: vk::SamplerAddressMode::REPEAT,
+            address_mode_w: vk::SamplerAddressMode::REPEAT,
+            anisotropy_enable: vk::TRUE,
+            max_anisotropy,
+            border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+            unnormalized_coordinates: vk::FALSE,
+            compare_enable: vk::FALSE,
+            compare_op: vk::CompareOp::ALWAYS,
+            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+            mip_lod_bias: 0.0,
+            min_lod: 0.0,
+            max_lod: 0.0,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.create_sampler(&sampler_info, None).unwrap()
+        }
     }
 }
 
