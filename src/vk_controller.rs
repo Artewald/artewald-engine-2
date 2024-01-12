@@ -110,15 +110,15 @@ impl VkController {
 
         let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout);
 
-        let render_pass = Self::create_render_pass(swapchain_image_format, &device);
+        let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device);
 
         let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass);
 
-        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent);
-
         let command_pool = Self::create_command_pool(&device, &queue_families);
-
+        
         let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent);
+        
+        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_view);
 
         let (texture_image, texture_image_memory) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
@@ -657,11 +657,11 @@ impl VkController {
         swapchain_image_views
     }
 
-    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D) -> Vec<vk::Framebuffer> {
+    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &vk::ImageView) -> Vec<vk::Framebuffer> {
         let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_views.len());
 
         for swapchain_image_view in swapchain_image_views.iter() {
-            let attachments = [*swapchain_image_view];
+            let attachments = [*swapchain_image_view, *depth_image_view];
 
             let framebuffer_create_info = vk::FramebufferCreateInfo {
                 s_type: StructureType::FRAMEBUFFER_CREATE_INFO,
@@ -684,6 +684,10 @@ impl VkController {
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
+            self.device.destroy_image_view(self.depth_image_view, None);
+            self.device.destroy_image(self.depth_image, None);
+            self.device.free_memory(self.depth_image_memory, None);
+
             self.swapchain_framebuffers.iter().for_each(|framebuffer| {
                 self.device.destroy_framebuffer(*framebuffer, None);
             });
@@ -811,6 +815,20 @@ impl VkController {
             ..Default::default()
         };
 
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo {
+            s_type: StructureType::PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            depth_test_enable: vk::TRUE,
+            depth_write_enable: vk::TRUE,
+            depth_compare_op: vk::CompareOp::LESS,
+            depth_bounds_test_enable: vk::FALSE,
+            min_depth_bounds: 0.0,
+            max_depth_bounds: 1.0,
+            stencil_test_enable: vk::FALSE,
+            front: vk::StencilOpState::default(),
+            back: vk::StencilOpState::default(),
+            ..Default::default()
+        };
+
         let pipeline_info = vk::GraphicsPipelineCreateInfo {
             s_type: StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
             stage_count: shader_stages.len() as u32,
@@ -820,7 +838,7 @@ impl VkController {
             p_viewport_state: &viewport_state,
             p_rasterization_state: &rasterizer,
             p_multisample_state: &multisampling,
-            p_depth_stencil_state: std::ptr::null(),
+            p_depth_stencil_state: &depth_stencil,
             p_color_blend_state: &color_blending,
             p_dynamic_state: &dynamic_state,
             layout: *pipeline_layout,
@@ -922,13 +940,13 @@ impl VkController {
             ..Default::default()
         };
 
-        let dependency = vk::SubpassDependency { // Update this next
+        let dependency = vk::SubpassDependency {
             src_subpass: vk::SUBPASS_EXTERNAL,
             dst_subpass: 0,
-            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
             src_access_mask: vk::AccessFlags::empty(),
-            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
             ..Default::default()
         };
 
@@ -1013,11 +1031,19 @@ impl VkController {
             device.begin_command_buffer(*command_buffer, &begin_info)
         }.unwrap();
 
-        let clear_color = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+        let clear_values = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
             },
-        };
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue {
+                    depth: 1.0,
+                    stencil: 0,
+                },
+            }
+        ];
 
         let render_pass_info = vk::RenderPassBeginInfo {
             s_type: StructureType::RENDER_PASS_BEGIN_INFO,
@@ -1030,8 +1056,8 @@ impl VkController {
                 },
                 extent: *swapchain_extent,
             },
-            clear_value_count: 1,
-            p_clear_values: &clear_color,
+            clear_value_count: clear_values.len() as u32,
+            p_clear_values: clear_values.as_ptr(),
             ..Default::default()
         };
 
@@ -1208,7 +1234,8 @@ impl VkController {
         self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format);
         let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
-        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent);
+        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent);
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view);
     }
 
     pub fn cleanup(&mut self) {
