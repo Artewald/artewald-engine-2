@@ -1761,9 +1761,7 @@ impl VkController {
                 instance.get_physical_device_format_properties(*physical_device, *format)
             };
 
-            if tiling == vk::ImageTiling::LINEAR && props.linear_tiling_features.contains(features) {
-                return Some(*format);
-            } else if tiling == vk::ImageTiling::OPTIMAL && props.optimal_tiling_features.contains(features) {
+            if (tiling == vk::ImageTiling::LINEAR && props.linear_tiling_features.contains(features)) || (tiling == vk::ImageTiling::OPTIMAL && props.optimal_tiling_features.contains(features)) {
                 return Some(*format);
             }
         }
