@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs::read_to_string, borrow::Cow, time::Instant};
+use std::{collections::{HashSet, HashMap, hash_map}, fs::read_to_string, borrow::Cow, time::Instant};
 
 use ash::{Entry, Instance, vk::{SurfaceKHR, PhysicalDevice, DeviceQueueCreateInfo, DeviceCreateInfo, Queue, SwapchainCreateInfoKHR, ImageView, ImageViewCreateInfo, StructureType, InstanceCreateFlags, InstanceCreateInfo, KhrPortabilityEnumerationFn, self, DebugUtilsMessengerCreateInfoEXT, SwapchainKHR, Image, ComponentMapping, ImageSubresourceRange, DescriptorPool}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{vertex::{Vertex, VERTICES, INDICES}, graphics_objects::UniformBufferObject};
+use crate::{vertex::Vertex, graphics_objects::UniformBufferObject};
 
 
 
@@ -42,6 +42,8 @@ pub struct VkController {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
+    vertices: Vec<Vertex>,
+    indices: Vec<u32>,
     vertex_buffer: vk::Buffer,
     vertex_buffer_memory: vk::DeviceMemory,
     index_buffer: vk::Buffer,
@@ -126,9 +128,11 @@ impl VkController {
 
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device);
 
-        let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
+        let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
 
-        let (index_buffer, index_buffer_memory) = Self::create_index_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue);
+        let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue, &vertices);
+
+        let (index_buffer, index_buffer_memory) = Self::create_index_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue, &indices);
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapping) = Self::create_uniform_buffers(&instance, &physical_device, &device);
 
@@ -186,6 +190,8 @@ impl VkController {
             depth_image,
             depth_image_memory,
             depth_image_view,
+            vertices,
+            indices,
         }
     }
 }
@@ -1020,7 +1026,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_buffer: &vk::Buffer, index_buffer: &vk::Buffer, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &Vec<vk::DescriptorSet>, current_frame: usize) {
+    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_buffer: &vk::Buffer, index_buffer: &vk::Buffer, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &Vec<vk::DescriptorSet>, current_frame: usize, indices: &[u32]) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -1075,7 +1081,7 @@ impl VkController {
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
             device.cmd_bind_index_buffer(*command_buffer, *index_buffer, 0, vk::IndexType::UINT32);
             device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline_layout, 0, &vec![descriptor_sets[current_frame]], &vec![]);
-            device.cmd_draw_indexed(*command_buffer, INDICES.len() as u32, 1, 0, 0, 0);
+            device.cmd_draw_indexed(*command_buffer, indices.len() as u32, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)
         }.unwrap();
@@ -1151,7 +1157,7 @@ impl VkController {
             self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
         }
 
-        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_buffer, &self.index_buffer, &self.pipeline_layout, &self.descriptor_sets, self.current_frame);
+        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_buffer, &self.index_buffer, &self.pipeline_layout, &self.descriptor_sets, self.current_frame, &self.indices);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -1303,16 +1309,14 @@ impl VkController {
         Err(Cow::from("Failed to find suitable memory type!"))
     }
 
-    fn create_vertex_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Buffer, vk::DeviceMemory) {
-        let vertices = VERTICES;
-        let vertices_slice = vertices.as_slice();
-        let size = std::mem::size_of_val(vertices_slice);
+    fn create_vertex_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex]) -> (vk::Buffer, vk::DeviceMemory) {
+        let size = std::mem::size_of_val(vertices);
         
         let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
         
         unsafe {
             let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
-            let vertices_ptr = vertices_slice.as_ptr() as *const u8;
+            let vertices_ptr = vertices.as_ptr() as *const u8;
             std::ptr::copy_nonoverlapping(vertices_ptr, data_ptr, size);
             device.unmap_memory(staging_buffer_memory);
         }
@@ -1329,16 +1333,14 @@ impl VkController {
         (vertex_buffer, vertex_buffer_memory)
     }
 
-    fn create_index_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Buffer, vk::DeviceMemory) {
-        let indices = INDICES;
-        let indices_slice = indices.as_slice();
-        let size = std::mem::size_of_val(indices_slice);
+    fn create_index_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, indices: &[u32]) -> (vk::Buffer, vk::DeviceMemory) {
+        let size = std::mem::size_of_val(indices);
         
         let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
         
         unsafe {
             let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
-            let indices_ptr = indices_slice.as_ptr() as *const u8;
+            let indices_ptr = indices.as_ptr() as *const u8;
             std::ptr::copy_nonoverlapping(indices_ptr, data_ptr, size);
             device.unmap_memory(staging_buffer_memory);
         }
@@ -1552,7 +1554,7 @@ impl VkController {
 // Images
 impl VkController {
     fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Image, vk::DeviceMemory) {
-        let binding = image::open("./assets/images/texture.jpg").unwrap();
+        let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = binding.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
         
@@ -1560,7 +1562,7 @@ impl VkController {
 
         unsafe {
             let data_ptr = device.map_memory(staging_buffer_memory, 0, image_size, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
-            std::ptr::copy_nonoverlapping(image.as_ptr() as *const u8, data_ptr, image_size as usize);
+            std::ptr::copy_nonoverlapping(image.as_ptr(), data_ptr, image_size as usize);
             device.unmap_memory(staging_buffer_memory);
         };
 
@@ -1869,5 +1871,35 @@ impl VkController {
         }
 
         Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
+    }
+}
+
+// Other
+impl VkController {
+    fn load_model(path: &str) -> (Vec<Vertex>, Vec<u32>) {
+        let (models, _) = tobj::load_obj(path, &tobj::LoadOptions::default()).unwrap();
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+        let mut unique_vertices: HashMap<Vertex, u32> = HashMap::new();
+
+        for model in models {
+            let mesh = model.mesh;
+            for i in 0..mesh.indices.len() {
+                let index = mesh.indices[i] as usize;
+                let vertex = Vertex {
+                    position: glm::vec3(mesh.positions[index * 3], mesh.positions[index * 3 + 1], mesh.positions[index * 3 + 2]),
+                    color: glm::vec3(1.0, 1.0, 1.0),
+                    tex_coord: glm::vec2(mesh.texcoords[index * 2], 1.0 - mesh.texcoords[index * 2 + 1]),
+                };
+        
+                if let hash_map::Entry::Vacant(e) = unique_vertices.entry(vertex) {
+                    e.insert(vertices.len() as u32);
+                    vertices.push(vertex);
+                }
+                indices.push(*unique_vertices.get(&vertex).unwrap());
+            }
+        }
+
+        (vertices, indices)
     }
 }

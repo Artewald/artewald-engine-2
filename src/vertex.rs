@@ -1,24 +1,7 @@
 use ash::vk;
 use memoffset::offset_of;
 use nalgebra_glm as glm;
-
-
-pub const VERTICES: [Vertex; 8] = [
-    Vertex::new(glm::Vec3::new(-0.5, -0.5, 0.0), glm::Vec3::new(1.0, 0.0, 0.0), glm::Vec2::new(1.0, 0.0)),
-    Vertex::new(glm::Vec3::new(0.5, -0.5, 0.0), glm::Vec3::new(0.0, 1.0, 0.0), glm::Vec2::new(0.0, 0.0)),
-    Vertex::new(glm::Vec3::new(0.5, 0.5, 0.0), glm::Vec3::new(0.0, 0.0, 1.0), glm::Vec2::new(0.0, 1.0)),
-    Vertex::new(glm::Vec3::new(-0.5, 0.5, 0.0), glm::Vec3::new(1.0, 1.0, 1.0), glm::Vec2::new(1.0, 1.0)),
-
-    Vertex::new(glm::Vec3::new(-0.5, -0.5, -0.5), glm::Vec3::new(1.0, 0.0, 0.0), glm::Vec2::new(1.0, 0.0)),
-    Vertex::new(glm::Vec3::new(0.5, -0.5, -0.5), glm::Vec3::new(0.0, 1.0, 0.0), glm::Vec2::new(0.0, 0.0)),
-    Vertex::new(glm::Vec3::new(0.5, 0.5, -0.5), glm::Vec3::new(0.0, 0.0, 1.0), glm::Vec2::new(0.0, 1.0)),
-    Vertex::new(glm::Vec3::new(-0.5, 0.5, -0.5), glm::Vec3::new(1.0, 1.0, 1.0), glm::Vec2::new(1.0, 1.0)),
-];
-
-pub const INDICES: [u32; 12] = [
-    0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4
-];
+use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -71,3 +54,21 @@ impl Vertex {
         vec![position_attribute_description, color_attribute_description, tex_coord_attribute_description]
     }
 }
+
+impl Hash for Vertex {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.position.iter().for_each(|&i| i.to_bits().hash(state));
+        self.color.iter().for_each(|&i| i.to_bits().hash(state));
+        self.tex_coord.iter().for_each(|&i| i.to_bits().hash(state));
+    }
+}
+
+impl PartialEq for Vertex {
+    fn eq(&self, other: &Self) -> bool {
+        self.position == other.position &&
+        self.color == other.color &&
+        self.tex_coord == other.tex_coord
+    }
+}
+
+impl Eq for Vertex {}
