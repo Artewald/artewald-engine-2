@@ -57,6 +57,7 @@ pub struct VkController {
     start_time: Instant,
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
+    mip_levels: u32,
     texture_image: vk::Image,
     texture_image_memory: vk::DeviceMemory,
     texture_image_view: vk::ImageView,
@@ -106,7 +107,11 @@ impl VkController {
 
         let swapchain_extent = Self::choose_swap_extent(&Self::query_swapchain_support(&entry, &instance, &physical_device, &surface).capabilities, &window);
 
-        let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format);
+        let command_pool = Self::create_command_pool(&device, &queue_families);
+
+        let (texture_image, texture_image_memory, mip_levels) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
+
+        let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format, mip_levels);
 
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
 
@@ -116,15 +121,15 @@ impl VkController {
 
         let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass);
 
-        let command_pool = Self::create_command_pool(&device, &queue_families);
+        //let command_pool = Self::create_command_pool(&device, &queue_families);
         
-        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent);
+        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent, mip_levels);
         
         let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_view);
 
-        let (texture_image, texture_image_memory) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
+        //let (texture_image, texture_image_memory, mip_levels) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
-        let texture_image_view = Self::create_texture_image_view(&device, &texture_image);
+        let texture_image_view = Self::create_texture_image_view(&device, &texture_image, mip_levels);
 
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device);
 
@@ -192,6 +197,7 @@ impl VkController {
             depth_image_view,
             vertices,
             indices,
+            mip_levels,
         }
     }
 }
@@ -653,11 +659,11 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
+    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format, mip_levels: u32) -> Vec<ImageView> {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
         for i in 0..swapchain_images.len() {
-            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR));
+            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, mip_levels));
         }
 
         swapchain_image_views
@@ -1237,10 +1243,10 @@ impl VkController {
 
         self.swapchain = Self::create_swapchain(&self.entry, &self.instance, &self.physical_device, &self.surface, &self.window, &self.swapchain_loader);
         self.swapchain_images = Self::get_swapchain_images(&self.swapchain, &self.swapchain_loader);
-        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format);
+        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format, self.mip_levels);
         let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
-        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent);
+        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.mip_levels);
         self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view);
     }
 
@@ -1553,11 +1559,13 @@ impl VkController {
 
 // Images
 impl VkController {
-    fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Image, vk::DeviceMemory) {
+    fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Image, vk::DeviceMemory, u32) {
         let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = binding.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
         
+        let mip_levels = ((image.dimensions().0 as f32).max(image.dimensions().1 as f32).log2().floor() + 1.0) as u32;
+
         let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT);
 
         unsafe {
@@ -1566,21 +1574,22 @@ impl VkController {
             device.unmap_memory(staging_buffer_memory);
         };
 
-        let (vk_image, device_memory) = Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let (vk_image, device_memory) = Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, mip_levels, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
-        Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL);
+        Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip_levels);
         Self::copy_buffer_to_image(&staging_buffer, &vk_image, image.dimensions().0, image.dimensions().1, device, command_pool, graphics_queue);
-        Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL);
+        //Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, mip_levels);
+        // TODO: SELF::GENERATE_MIPMAPS NEXT
 
         unsafe {
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_buffer_memory, None);
         }
 
-        (vk_image, device_memory)
+        (vk_image, device_memory, mip_levels)
     }
 
-    fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags,) -> (vk::Image, vk::DeviceMemory) {
+    fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, mip_levels: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags,) -> (vk::Image, vk::DeviceMemory) {
         let image_info = vk::ImageCreateInfo {
             s_type: StructureType::IMAGE_CREATE_INFO,
             image_type: vk::ImageType::TYPE_2D,
@@ -1589,7 +1598,7 @@ impl VkController {
                 height,
                 depth: 1,
             },
-            mip_levels: 1,
+            mip_levels,
             array_layers: 1,
             format,
             tiling,
@@ -1627,7 +1636,7 @@ impl VkController {
         (image, image_memory)
     }
 
-    fn transition_image_layout(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout) {
+    fn transition_image_layout(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, mip_levels: u32) {
         let command_buffer = Self::begin_single_time_command(device, command_pool);
 
         let source_stage = match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
@@ -1664,7 +1673,7 @@ impl VkController {
                     _ => vk::ImageAspectFlags::COLOR,
                 },
                 base_mip_level: 0,
-                level_count: 1,
+                level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count: 1,
             },
@@ -1689,7 +1698,7 @@ impl VkController {
         Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
     }
 
-    fn create_image_view(device: &Device, image: &vk::Image, format: vk::Format, aspect_flags: vk::ImageAspectFlags) -> vk::ImageView {
+    fn create_image_view(device: &Device, image: &vk::Image, format: vk::Format, aspect_flags: vk::ImageAspectFlags, mip_levels: u32) -> vk::ImageView {
         let view_info = vk::ImageViewCreateInfo {
             s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
             image: *image,
@@ -1698,7 +1707,7 @@ impl VkController {
             subresource_range: vk::ImageSubresourceRange {
                 aspect_mask: aspect_flags,
                 base_mip_level: 0,
-                level_count: 1,
+                level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count: 1,
             },
@@ -1710,8 +1719,8 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_texture_image_view(device: &Device, image: &vk::Image) -> vk::ImageView {
-        let texture_image_view = Self::create_image_view(device, image, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR);
+    fn create_texture_image_view(device: &Device, image: &vk::Image, mip_levels: u32) -> vk::ImageView {
+        let texture_image_view = Self::create_image_view(device, image, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels);
 
         texture_image_view
     }
@@ -1745,14 +1754,14 @@ impl VkController {
         }
     }
 
-    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D, mip_levels: u32) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
         let depth_format = Self::find_depth_format(instance, physical_device);
 
-        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, mip_levels, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
-        let depth_image_view = Self::create_image_view(device, &depth_image, depth_format, vk::ImageAspectFlags::DEPTH);
+        let depth_image_view = Self::create_image_view(device, &depth_image, depth_format, vk::ImageAspectFlags::DEPTH, mip_levels);
 
-        Self::transition_image_layout(device, command_pool, graphics_queue, &depth_image, depth_format, vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+        Self::transition_image_layout(device, command_pool, graphics_queue, &depth_image, depth_format, vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL, mip_levels);
 
         (depth_image, depth_image_memory, depth_image_view)
     }
