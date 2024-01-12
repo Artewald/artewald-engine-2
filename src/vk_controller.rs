@@ -59,6 +59,9 @@ pub struct VkController {
     texture_image_memory: vk::DeviceMemory,
     texture_image_view: vk::ImageView,
     texture_sampler: vk::Sampler,
+    depth_image: vk::Image,
+    depth_image_memory: vk::DeviceMemory,
+    depth_image_view: vk::ImageView,
 }
 
 impl VkController {
@@ -114,6 +117,8 @@ impl VkController {
         let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent);
 
         let command_pool = Self::create_command_pool(&device, &queue_families);
+
+        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent);
 
         let (texture_image, texture_image_memory) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
@@ -178,6 +183,9 @@ impl VkController {
             texture_image_memory,
             texture_image_view,
             texture_sampler,
+            depth_image,
+            depth_image_memory,
+            depth_image_view,
         }
     }
 }
@@ -643,7 +651,7 @@ impl VkController {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
         for i in 0..swapchain_images.len() {
-            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format));
+            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR));
         }
 
         swapchain_image_views
@@ -871,7 +879,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_render_pass(swapchain_image_format: vk::Format, device: &Device) -> vk::RenderPass {
+    fn create_render_pass(swapchain_image_format: vk::Format, device: &Device, instance: &Instance, physical_device: &PhysicalDevice) -> vk::RenderPass {
         let color_attachment = vk::AttachmentDescription {
             format: swapchain_image_format,
             samples: vk::SampleCountFlags::TYPE_1,
@@ -889,14 +897,32 @@ impl VkController {
             layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         };
 
+        let depth_attachment = vk::AttachmentDescription {
+            format: Self::find_depth_format(instance, physical_device),
+            samples: vk::SampleCountFlags::TYPE_1,
+            load_op: vk::AttachmentLoadOp::CLEAR,
+            store_op: vk::AttachmentStoreOp::DONT_CARE,
+            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+            initial_layout: vk::ImageLayout::UNDEFINED,
+            final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            ..Default::default()
+        };
+
+        let depth_attachment_ref = vk::AttachmentReference {
+            attachment: 1,
+            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+
         let subpass = vk::SubpassDescription {
             pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
             color_attachment_count: 1,
             p_color_attachments: &color_attachment_ref,
+            p_depth_stencil_attachment: &depth_attachment_ref,
             ..Default::default()
         };
 
-        let dependency = vk::SubpassDependency {
+        let dependency = vk::SubpassDependency { // Update this next
             src_subpass: vk::SUBPASS_EXTERNAL,
             dst_subpass: 0,
             src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
@@ -906,10 +932,11 @@ impl VkController {
             ..Default::default()
         };
 
+        let attachments = [color_attachment, depth_attachment];
         let render_pass_info = vk::RenderPassCreateInfo {
             s_type: StructureType::RENDER_PASS_CREATE_INFO,
-            attachment_count: 1,
-            p_attachments: &color_attachment,
+            attachment_count: attachments.len() as u32,
+            p_attachments: attachments.as_ptr(),
             subpass_count: 1,
             p_subpasses: &subpass,
             dependency_count: 1,
@@ -1574,14 +1601,16 @@ impl VkController {
     fn transition_image_layout(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout) {
         let command_buffer = Self::begin_single_time_command(device, command_pool);
 
-        let mut source_stage = match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
+        let source_stage = match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
             vk::ImageLayout::UNDEFINED => vk::PipelineStageFlags::TOP_OF_PIPE,
             vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::PipelineStageFlags::TRANSFER,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::PipelineStageFlags::TOP_OF_PIPE,
             _ => panic!("Unsupported layout transition!"),
         };
-        let mut destination_stage = match new_layout {
+        let destination_stage = match new_layout {
             vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::PipelineStageFlags::TRANSFER,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::PipelineStageFlags::FRAGMENT_SHADER,
+            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
             _ => panic!("Unsupported layout transition!"),
         };
 
@@ -1593,7 +1622,18 @@ impl VkController {
             dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
             image: *image,
             subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
+                aspect_mask: match new_layout {
+                    vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => {
+                        let mut depth = vk::ImageAspectFlags::DEPTH;
+                        
+                        if Self::has_stencil_component(format) {
+                            depth |= vk::ImageAspectFlags::STENCIL;
+                        }
+
+                        depth
+                    },
+                    _ => vk::ImageAspectFlags::COLOR,
+                },
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,
@@ -1607,6 +1647,7 @@ impl VkController {
             dst_access_mask: match new_layout {
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
+                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
                 _ => panic!("Unsupported layout transition!"),
             },
             ..Default::default()
@@ -1619,14 +1660,14 @@ impl VkController {
         Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
     }
 
-    fn create_image_view(device: &Device, image: &vk::Image, format: vk::Format) -> vk::ImageView {
+    fn create_image_view(device: &Device, image: &vk::Image, format: vk::Format, aspect_flags: vk::ImageAspectFlags) -> vk::ImageView {
         let view_info = vk::ImageViewCreateInfo {
             s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
             image: *image,
             view_type: vk::ImageViewType::TYPE_2D,
             format,
             subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
+                aspect_mask: aspect_flags,
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,
@@ -1641,7 +1682,7 @@ impl VkController {
     }
 
     fn create_texture_image_view(device: &Device, image: &vk::Image) -> vk::ImageView {
-        let texture_image_view = Self::create_image_view(device, image, vk::Format::R8G8B8A8_SRGB);
+        let texture_image_view = Self::create_image_view(device, image, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR);
 
         texture_image_view
     }
@@ -1673,6 +1714,41 @@ impl VkController {
         unsafe {
             device.create_sampler(&sampler_info, None).unwrap()
         }
+    }
+
+    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+        let depth_format = Self::find_depth_format(instance, physical_device);
+
+        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+
+        let depth_image_view = Self::create_image_view(device, &depth_image, depth_format, vk::ImageAspectFlags::DEPTH);
+
+        Self::transition_image_layout(device, command_pool, graphics_queue, &depth_image, depth_format, vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+
+        (depth_image, depth_image_memory, depth_image_view)
+    }
+
+    fn find_supported_formats(instance: &Instance, physical_device: &PhysicalDevice, candidates: &[vk::Format], tiling: vk::ImageTiling, features: vk::FormatFeatureFlags) -> Option<vk::Format> {
+        for format in candidates {
+            let props = unsafe {
+                instance.get_physical_device_format_properties(*physical_device, *format)
+            };
+
+            if tiling == vk::ImageTiling::LINEAR && props.linear_tiling_features.contains(features) {
+                return Some(*format);
+            } else if tiling == vk::ImageTiling::OPTIMAL && props.optimal_tiling_features.contains(features) {
+                return Some(*format);
+            }
+        }
+        None
+    }
+
+    fn find_depth_format(instance: &Instance, physical_device: &PhysicalDevice) -> vk::Format {
+        Self::find_supported_formats(instance, physical_device, &[vk::Format::D32_SFLOAT, vk::Format::D32_SFLOAT_S8_UINT, vk::Format::D24_UNORM_S8_UINT], vk::ImageTiling::OPTIMAL, vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT).unwrap()
+    }
+
+    fn has_stencil_component(format: vk::Format) -> bool {
+        format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT
     }
 }
 
