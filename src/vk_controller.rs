@@ -62,9 +62,13 @@ pub struct VkController {
     texture_image_memory: vk::DeviceMemory,
     texture_image_view: vk::ImageView,
     texture_sampler: vk::Sampler,
+    color_image: vk::Image,
+    color_image_memory: vk::DeviceMemory,
+    color_image_view: vk::ImageView,
     depth_image: vk::Image,
     depth_image_memory: vk::DeviceMemory,
     depth_image_view: vk::ImageView,
+    msaa_samples: vk::SampleCountFlags,
 }
 
 impl VkController {
@@ -89,7 +93,7 @@ impl VkController {
 
         let surface = Self::create_surface(&entry, &instance, &window);
 
-        let physical_device = Self::pick_physical_device(&entry, &instance, &surface);
+        let (physical_device, msaa_samples) = Self::pick_physical_device(&entry, &instance, &surface);
 
         let queue_families = Self::find_queue_families(&entry, &instance, &physical_device, &surface);
         
@@ -117,13 +121,15 @@ impl VkController {
 
         let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout);
 
-        let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device);
+        let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples);
 
-        let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass);
+        let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples);
         
-        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent, mip_levels);
+        let (color_image, color_image_memory, color_image_view) = Self::create_color_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, swapchain_image_format, &swapchain_extent, mip_levels,  msaa_samples);
+
+        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent, mip_levels, msaa_samples);
         
-        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_view);
+        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_view, &color_image_view);
 
         let texture_image_view = Self::create_texture_image_view(&device, &texture_image, mip_levels);
 
@@ -188,12 +194,16 @@ impl VkController {
             texture_image_memory,
             texture_image_view,
             texture_sampler,
+            color_image,
+            color_image_memory,
+            color_image_view,
             depth_image,
             depth_image_memory,
             depth_image_view,
             vertices,
             indices,
             mip_levels,
+            msaa_samples,
         }
     }
 }
@@ -334,7 +344,7 @@ impl VkController {
 
 // Physical device
 impl VkController {
-    fn pick_physical_device(entry: &Entry, instance: &Instance, surface: &SurfaceKHR) -> PhysicalDevice{
+    fn pick_physical_device(entry: &Entry, instance: &Instance, surface: &SurfaceKHR) -> (PhysicalDevice, vk::SampleCountFlags) {
         let mut device_vec = unsafe {
             instance.enumerate_physical_devices()
         }.expect("Expected to be able to look for physical devices (GPU)!");
@@ -346,13 +356,21 @@ impl VkController {
         device_vec.sort_by_key(|device| Self::rate_physical_device_suitability(instance, device));
         device_vec.reverse();
 
+        let mut chosen_device = None;
+        let mut msaa_samples = vk::SampleCountFlags::TYPE_1;
+
         for device in device_vec.iter() {
             if Self::is_device_suitable(entry, instance, device, surface) {
-                return *device;
+                msaa_samples = Self::get_max_usable_sample_count(instance, device);
+                chosen_device = Some(*device);
             }
         }
 
-        panic!("No suitable physical device found!");
+        if let Some(device) = chosen_device {
+            (device, msaa_samples)
+        } else {
+            panic!("No suitable physical device found!");
+        }
     }
 
     fn is_device_suitable(entry: &Entry, instance: &Instance, device: &PhysicalDevice, surface: &SurfaceKHR) -> bool {
@@ -665,11 +683,11 @@ impl VkController {
         swapchain_image_views
     }
 
-    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &vk::ImageView) -> Vec<vk::Framebuffer> {
+    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &vk::ImageView, color_image_view: &vk::ImageView) -> Vec<vk::Framebuffer> {
         let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_views.len());
 
         for swapchain_image_view in swapchain_image_views.iter() {
-            let attachments = [*swapchain_image_view, *depth_image_view];
+            let attachments = [*color_image_view, *depth_image_view, *swapchain_image_view];
 
             let framebuffer_create_info = vk::FramebufferCreateInfo {
                 s_type: StructureType::FRAMEBUFFER_CREATE_INFO,
@@ -692,6 +710,10 @@ impl VkController {
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
+            self.device.destroy_image_view(self.color_image_view, None);
+            self.device.destroy_image(self.color_image, None);
+            self.device.free_memory(self.color_image_memory, None);
+
             self.device.destroy_image_view(self.depth_image_view, None);
             self.device.destroy_image(self.depth_image, None);
             self.device.free_memory(self.depth_image_memory, None);
@@ -711,7 +733,7 @@ impl VkController {
 
 // Graphics pipeline
 impl VkController {
-    fn create_graphics_pipeline(device: &Device, swapchain_extent: &vk::Extent2D, pipeline_layout: &vk::PipelineLayout, render_pass: &vk::RenderPass) -> vk::Pipeline {
+    fn create_graphics_pipeline(device: &Device, swapchain_extent: &vk::Extent2D, pipeline_layout: &vk::PipelineLayout, render_pass: &vk::RenderPass, msaa_samples: vk::SampleCountFlags) -> vk::Pipeline {
         let vert_shader_code = Self::compile_shader("./assets/shaders/triangle.vert", ShaderKind::Vertex, "triangle.vert");
         let frag_shader_code = Self::compile_shader("./assets/shaders/triangle.frag", ShaderKind::Fragment, "triangle.frag");
 
@@ -794,7 +816,7 @@ impl VkController {
         let multisampling = vk::PipelineMultisampleStateCreateInfo {
             s_type: StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
             sample_shading_enable: vk::FALSE,
-            rasterization_samples: vk::SampleCountFlags::TYPE_1,
+            rasterization_samples: msaa_samples,
             min_sample_shading: 1.0,
             p_sample_mask: std::ptr::null(),
             alpha_to_coverage_enable: vk::FALSE,
@@ -905,16 +927,16 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_render_pass(swapchain_image_format: vk::Format, device: &Device, instance: &Instance, physical_device: &PhysicalDevice) -> vk::RenderPass {
+    fn create_render_pass(swapchain_image_format: vk::Format, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, msaa_samples: vk::SampleCountFlags) -> vk::RenderPass {
         let color_attachment = vk::AttachmentDescription {
             format: swapchain_image_format,
-            samples: vk::SampleCountFlags::TYPE_1,
+            samples: msaa_samples,
             load_op: vk::AttachmentLoadOp::CLEAR,
             store_op: vk::AttachmentStoreOp::STORE,
             stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
             stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
             initial_layout: vk::ImageLayout::UNDEFINED,
-            final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+            final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             ..Default::default()
         };
 
@@ -925,7 +947,7 @@ impl VkController {
 
         let depth_attachment = vk::AttachmentDescription {
             format: Self::find_depth_format(instance, physical_device),
-            samples: vk::SampleCountFlags::TYPE_1,
+            samples: msaa_samples,
             load_op: vk::AttachmentLoadOp::CLEAR,
             store_op: vk::AttachmentStoreOp::DONT_CARE,
             stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
@@ -940,11 +962,29 @@ impl VkController {
             layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
 
+        let color_attachment_resolve = vk::AttachmentDescription {
+            format: swapchain_image_format,
+            samples: vk::SampleCountFlags::TYPE_1,
+            load_op: vk::AttachmentLoadOp::DONT_CARE,
+            store_op: vk::AttachmentStoreOp::STORE,
+            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+            initial_layout: vk::ImageLayout::UNDEFINED,
+            final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+            ..Default::default()
+        };
+
+        let color_attachment_resolve_ref = vk::AttachmentReference {
+            attachment: 2,
+            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        };
+
         let subpass = vk::SubpassDescription {
             pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
             color_attachment_count: 1,
             p_color_attachments: &color_attachment_ref,
             p_depth_stencil_attachment: &depth_attachment_ref,
+            p_resolve_attachments: &color_attachment_resolve_ref,
             ..Default::default()
         };
 
@@ -958,7 +998,7 @@ impl VkController {
             ..Default::default()
         };
 
-        let attachments = [color_attachment, depth_attachment];
+        let attachments = [color_attachment, depth_attachment, color_attachment_resolve];
         let render_pass_info = vk::RenderPassCreateInfo {
             s_type: StructureType::RENDER_PASS_CREATE_INFO,
             attachment_count: attachments.len() as u32,
@@ -1242,8 +1282,9 @@ impl VkController {
         self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format, self.mip_levels);
         let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
-        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.mip_levels);
-        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view);
+        (self.color_image, self.color_image_memory, self.color_image_view) = Self::create_color_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, self.swapchain_image_format, &self.swapchain_extent, self.mip_levels, self.msaa_samples);
+        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.mip_levels, self.msaa_samples);
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view, &self.color_image_view);
     }
 
     pub fn cleanup(&mut self) {
@@ -1570,18 +1611,19 @@ impl VkController {
             device.unmap_memory(staging_buffer_memory);
         };
 
-        let (vk_image, device_memory) = Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, mip_levels, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let (vk_image, device_memory) = Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, mip_levels, vk::SampleCountFlags::TYPE_1, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
         Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip_levels);
         Self::copy_buffer_to_image(&staging_buffer, &vk_image, image.dimensions().0, image.dimensions().1, device, command_pool, graphics_queue);
         //Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, mip_levels);
-        Self::generate_mipmaps(instance, physical_device, device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels);
-
+        
         unsafe {
             device.destroy_buffer(staging_buffer, None);
             device.free_memory(staging_buffer_memory, None);
         }
-
+        
+        Self::generate_mipmaps(instance, physical_device, device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels);
+        
         (vk_image, device_memory, mip_levels)
     }
 
@@ -1688,7 +1730,7 @@ impl VkController {
         Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
     }
 
-    fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, mip_levels: u32, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags,) -> (vk::Image, vk::DeviceMemory) {
+    fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, mip_levels: u32, num_samples: vk::SampleCountFlags, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags,) -> (vk::Image, vk::DeviceMemory) {
         let image_info = vk::ImageCreateInfo {
             s_type: StructureType::IMAGE_CREATE_INFO,
             image_type: vk::ImageType::TYPE_2D,
@@ -1704,7 +1746,7 @@ impl VkController {
             initial_layout: vk::ImageLayout::UNDEFINED,
             usage,
             sharing_mode: vk::SharingMode::EXCLUSIVE,
-            samples: vk::SampleCountFlags::TYPE_1,
+            samples: num_samples,
             flags: vk::ImageCreateFlags::empty(),
             ..Default::default()
         };
@@ -1853,10 +1895,10 @@ impl VkController {
         }
     }
 
-    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D, mip_levels: u32) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D, mip_levels: u32, msaa_samples: vk::SampleCountFlags) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
         let depth_format = Self::find_depth_format(instance, physical_device);
 
-        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, mip_levels, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, mip_levels, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
         let depth_image_view = Self::create_image_view(device, &depth_image, depth_format, vk::ImageAspectFlags::DEPTH, mip_levels);
 
@@ -1884,6 +1926,38 @@ impl VkController {
 
     fn has_stencil_component(format: vk::Format) -> bool {
         format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT
+    }
+
+    fn get_max_usable_sample_count(instance: &Instance, physical_device: &PhysicalDevice) -> vk::SampleCountFlags {
+        let physical_device_properties = unsafe {
+            instance.get_physical_device_properties(*physical_device)
+        };
+
+        let count = physical_device_properties.limits.framebuffer_color_sample_counts.min(physical_device_properties.limits.framebuffer_depth_sample_counts);
+
+        if count.contains(vk::SampleCountFlags::TYPE_64) {
+            vk::SampleCountFlags::TYPE_64
+        } else if count.contains(vk::SampleCountFlags::TYPE_32) {
+            vk::SampleCountFlags::TYPE_32
+        } else if count.contains(vk::SampleCountFlags::TYPE_16) {
+            vk::SampleCountFlags::TYPE_16
+        } else if count.contains(vk::SampleCountFlags::TYPE_8) {
+            vk::SampleCountFlags::TYPE_8
+        } else if count.contains(vk::SampleCountFlags::TYPE_4) {
+            vk::SampleCountFlags::TYPE_4
+        } else if count.contains(vk::SampleCountFlags::TYPE_2) {
+            vk::SampleCountFlags::TYPE_2
+        } else {
+            vk::SampleCountFlags::TYPE_1
+        }
+    }
+
+    fn create_color_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_format: vk::Format, swapchain_extent: &vk::Extent2D, mip_levels: u32, num_samples: vk::SampleCountFlags) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+        let (color_image, color_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, mip_levels, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+
+        let color_image_view = Self::create_image_view(device, &color_image, swapchain_format, vk::ImageAspectFlags::COLOR, mip_levels);
+
+        (color_image, color_image_memory, color_image_view)
     }
 }
 
