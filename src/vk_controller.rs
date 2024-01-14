@@ -71,6 +71,25 @@ pub struct VkController {
     msaa_samples: vk::SampleCountFlags,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct QueueFamilyIndices {
+    graphics_family: Option<u32>,
+    present_family: Option<u32>,
+}
+
+impl QueueFamilyIndices {
+    fn is_complete(&self) -> bool {
+        self.graphics_family.is_some() && self.present_family.is_some()
+    }
+}
+
+struct SwapchainSupportDetails {
+    pub capabilities: vk::SurfaceCapabilitiesKHR,
+    pub formats: Vec<vk::SurfaceFormatKHR>,
+    pub present_modes: Vec<vk::PresentModeKHR>,
+}
+
+// Instance and device management
 impl VkController {
     const DEVICE_EXTENSIONS: [*const i8; 1] = [Swapchain::name().as_ptr()];
     const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -206,10 +225,7 @@ impl VkController {
             msaa_samples,
         }
     }
-}
 
-// Instance
-impl VkController {
     fn create_instance(entry: &Entry, application_name: &str, window: &Window, debug_create_info: Option<&DebugUtilsMessengerCreateInfoEXT>) -> Instance {
         if IS_DEBUG_MODE && !Self::check_validation_layer_support(entry) {
             panic!("Validation layers requested because of debug mode, but is not available!");
@@ -286,64 +302,7 @@ impl VkController {
 
         true
     }
-}
 
-// Debug messenger
-impl VkController {
-    fn setup_debug_messenger(entry: &Entry, instance: &Instance, debug_utils_create_info: DebugUtilsMessengerCreateInfoEXT) -> vk::DebugUtilsMessengerEXT {
-        let debug_utils_loader = DebugUtils::new(entry, instance);
-        match unsafe {
-            debug_utils_loader.create_debug_utils_messenger(&debug_utils_create_info, None)
-        } {
-            Ok(messenger) => messenger,
-            Err(e) => panic!("Failed to set up debug messenger: {:?}", e),
-        }
-    }
-
-    fn get_debug_messenger_create_info() -> DebugUtilsMessengerCreateInfoEXT {
-        DebugUtilsMessengerCreateInfoEXT {
-            s_type: StructureType::DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
-            message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE,
-            message_type: vk::DebugUtilsMessageTypeFlagsEXT::GENERAL | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-            pfn_user_callback: Some(Self::debug_callback),
-            ..Default::default()
-        }
-    }
-
-    unsafe extern "system" fn debug_callback(
-        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
-        message_type: vk::DebugUtilsMessageTypeFlagsEXT,
-        p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
-        _p_user_data: *mut std::ffi::c_void
-    ) -> vk::Bool32 {
-        
-        let debug_type = match message_type {
-            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "General",
-            vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "Performance",
-            vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => "Validation",
-            _ => "Unknown",
-        };
-
-        let debug_severity = match message_severity {
-            vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => "Verbose",
-            vk::DebugUtilsMessageSeverityFlagsEXT::INFO => "Info",
-            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => "Warning",
-            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => "Error",
-            _ => "Unknown",
-        };
-
-        if message_severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
-            let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message).to_string_lossy();
-            println!("[Debug][{debug_type}][{debug_severity}]: {:?}", message);
-        }
-
-        vk::FALSE
-    }
-}
-
-
-// Physical device
-impl VkController {
     fn pick_physical_device(entry: &Entry, instance: &Instance, surface: &SurfaceKHR) -> (PhysicalDevice, vk::SampleCountFlags) {
         let mut device_vec = unsafe {
             instance.enumerate_physical_devices()
@@ -427,22 +386,7 @@ impl VkController {
 
         score
     }
-}
 
-#[derive(Debug, Clone, Copy)]
-struct QueueFamilyIndices {
-    graphics_family: Option<u32>,
-    present_family: Option<u32>,
-}
-
-impl QueueFamilyIndices {
-    fn is_complete(&self) -> bool {
-        self.graphics_family.is_some() && self.present_family.is_some()
-    }
-}
-
-// Queues
-impl VkController {
     fn find_queue_families(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, surface: &SurfaceKHR) -> QueueFamilyIndices {
         let mut indices = QueueFamilyIndices { graphics_family: None, present_family: None };
 
@@ -493,10 +437,7 @@ impl VkController {
         }
         )
     }
-}
 
-// Logical device
-impl VkController {
     fn create_logical_device(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, surface: &SurfaceKHR) -> Device {
         let indices = Self::find_queue_families(entry, instance, physical_device, surface);
         
@@ -517,6 +458,7 @@ impl VkController {
 
         let device_features = vk::PhysicalDeviceFeatures {
             sampler_anisotropy: vk::TRUE,
+            sample_rate_shading: vk::TRUE, // This may cause performance loss, but it's not required
             ..Default::default()
         };
 
@@ -544,9 +486,64 @@ impl VkController {
             instance.create_device(*physical_device, &device_create_info, None)
         }.unwrap()
     }
+
+    fn wait_for_device(&self) {
+        unsafe {
+            self.device.device_wait_idle().unwrap();
+        }
+    }
+
+    pub fn cleanup(&mut self) {
+        unsafe {
+            self.wait_for_device();
+
+            self.cleanup_swapchain();
+
+            self.device.destroy_sampler(self.texture_sampler, None);
+            self.device.destroy_image_view(self.texture_image_view, None);
+
+            self.device.destroy_image(self.texture_image, None);
+            self.device.free_memory(self.texture_image_memory, None);
+
+            for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+                self.device.destroy_buffer(self.uniform_buffers[i], None);
+                self.device.free_memory(self.uniform_buffers_memory[i], None);
+            }
+
+            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
+
+            self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
+
+            self.device.destroy_pipeline(self.graphics_pipeline, None);
+            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
+            self.device.destroy_render_pass(self.render_pass, None);
+            
+            self.device.destroy_buffer(self.index_buffer, None);
+            self.device.free_memory(self.index_buffer_memory, None);
+
+            self.device.destroy_buffer(self.vertex_buffer, None);
+            self.device.free_memory(self.vertex_buffer_memory, None);
+
+            for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+                self.device.destroy_semaphore(self.render_finished_semaphores[i], None);
+                self.device.destroy_semaphore(self.image_available_semaphores[i], None);
+                self.device.destroy_fence(self.in_flight_fences[i], None);
+            }
+
+            self.device.destroy_command_pool(self.command_pool, None);
+            self.device.destroy_device(None);
+
+            if IS_DEBUG_MODE {
+                DebugUtils::new(&self.entry, &self.instance).destroy_debug_utils_messenger(self.debug_messenger.unwrap(), None);
+            }
+
+            Surface::new(&self.entry, &self.instance).destroy_surface(self.surface, None);
+            self.instance.destroy_instance(None);
+        }
+    }
 }
 
-// Surface
+// Swapchain management
 impl VkController {
     fn create_surface(entry: &Entry, instance: &Instance, window: &Window) -> SurfaceKHR {
         unsafe {
@@ -559,16 +556,7 @@ impl VkController {
             ).unwrap()
         }
     }
-}
 
-struct SwapchainSupportDetails {
-    pub capabilities: vk::SurfaceCapabilitiesKHR,
-    pub formats: Vec<vk::SurfaceFormatKHR>,
-    pub present_modes: Vec<vk::PresentModeKHR>,
-}
-
-// Swapchain
-impl VkController {
     fn query_swapchain_support(entry: &Entry, instance: &Instance, physical_device: &PhysicalDevice, surface: &SurfaceKHR) -> SwapchainSupportDetails {
         unsafe {
             let capabilities = Surface::new(entry, instance).get_physical_device_surface_capabilities(*physical_device, *surface).unwrap();
@@ -673,39 +661,29 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
-        let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
+    pub fn recreate_swapchain(&mut self) {
+        if self.window.inner_size().width == 0 || self.window.inner_size().height == 0 {
+            self.is_minimized = true;
+            return;
+        }
+        self.is_minimized = false;
 
-        for i in 0..swapchain_images.len() {
-            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, 1));
+        println!("Recreating swapchain!");
+
+        unsafe {
+            self.device.device_wait_idle().unwrap();
         }
 
-        swapchain_image_views
-    }
+        self.cleanup_swapchain();
 
-    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &vk::ImageView, color_image_view: &vk::ImageView) -> Vec<vk::Framebuffer> {
-        let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_views.len());
-
-        for swapchain_image_view in swapchain_image_views.iter() {
-            let attachments = [*color_image_view, *depth_image_view, *swapchain_image_view];
-
-            let framebuffer_create_info = vk::FramebufferCreateInfo {
-                s_type: StructureType::FRAMEBUFFER_CREATE_INFO,
-                render_pass: *render_pass,
-                attachment_count: attachments.len() as u32,
-                p_attachments: attachments.as_ptr(),
-                width: swapchain_extent.width,
-                height: swapchain_extent.height,
-                layers: 1,
-                ..Default::default()
-            };
-
-            swapchain_framebuffers.push(unsafe {
-                device.create_framebuffer(&framebuffer_create_info, None)
-            }.unwrap());
-        }
-
-        swapchain_framebuffers
+        self.swapchain = Self::create_swapchain(&self.entry, &self.instance, &self.physical_device, &self.surface, &self.window, &self.swapchain_loader);
+        self.swapchain_images = Self::get_swapchain_images(&self.swapchain, &self.swapchain_loader);
+        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format);
+        let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
+        self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
+        (self.color_image, self.color_image_memory, self.color_image_view) = Self::create_color_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples);
+        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.msaa_samples);
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view, &self.color_image_view);
     }
 
     fn cleanup_swapchain(&mut self) {
@@ -729,9 +707,19 @@ impl VkController {
             self.swapchain_loader.destroy_swapchain(self.swapchain, None);
         }
     }
+
+    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
+        let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
+
+        for i in 0..swapchain_images.len() {
+            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, 1));
+        }
+
+        swapchain_image_views
+    }
 }
 
-// Graphics pipeline
+// Rendering and graphics pipeline
 impl VkController {
     fn create_graphics_pipeline(device: &Device, swapchain_extent: &vk::Extent2D, pipeline_layout: &vk::PipelineLayout, render_pass: &vk::RenderPass, msaa_samples: vk::SampleCountFlags) -> vk::Pipeline {
         let vert_shader_code = Self::compile_shader("./assets/shaders/triangle.vert", ShaderKind::Vertex, "triangle.vert");
@@ -815,9 +803,9 @@ impl VkController {
 
         let multisampling = vk::PipelineMultisampleStateCreateInfo {
             s_type: StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            sample_shading_enable: vk::FALSE,
+            sample_shading_enable: vk::TRUE, // This may cause performance loss, but it's not required
             rasterization_samples: msaa_samples,
-            min_sample_shading: 1.0,
+            min_sample_shading: 0.2,
             p_sample_mask: std::ptr::null(),
             alpha_to_coverage_enable: vk::FALSE,
             alpha_to_one_enable: vk::FALSE,
@@ -1035,10 +1023,32 @@ impl VkController {
             extent: *swapchain_extent,
         }
     }
-}
 
-// Commandpool and buffers
-impl VkController {
+    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &vk::ImageView, color_image_view: &vk::ImageView) -> Vec<vk::Framebuffer> {
+        let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_views.len());
+
+        for swapchain_image_view in swapchain_image_views.iter() {
+            let attachments = [*color_image_view, *depth_image_view, *swapchain_image_view];
+
+            let framebuffer_create_info = vk::FramebufferCreateInfo {
+                s_type: StructureType::FRAMEBUFFER_CREATE_INFO,
+                render_pass: *render_pass,
+                attachment_count: attachments.len() as u32,
+                p_attachments: attachments.as_ptr(),
+                width: swapchain_extent.width,
+                height: swapchain_extent.height,
+                layers: 1,
+                ..Default::default()
+            };
+
+            swapchain_framebuffers.push(unsafe {
+                device.create_framebuffer(&framebuffer_create_info, None)
+            }.unwrap());
+        }
+
+        swapchain_framebuffers
+    }
+
     fn create_command_pool(device: &Device, indices: &QueueFamilyIndices) -> vk::CommandPool {
 
         let pool_info = vk::CommandPoolCreateInfo {
@@ -1128,47 +1138,7 @@ impl VkController {
             device.end_command_buffer(*command_buffer)
         }.unwrap();
     }
-}
 
-// Synchronization
-impl VkController {
-    fn create_sync_objects(device: &Device) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
-        let mut image_available_semaphores = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
-        let mut render_finished_semaphores = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
-        let mut in_flight_fences = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
-
-        let semaphore_create_info = vk::SemaphoreCreateInfo {
-            s_type: StructureType::SEMAPHORE_CREATE_INFO,
-            ..Default::default()
-        };
-
-        let fence_create_info = vk::FenceCreateInfo {
-            s_type: StructureType::FENCE_CREATE_INFO,
-            flags: vk::FenceCreateFlags::SIGNALED,
-            ..Default::default()
-        };
-
-        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
-
-            image_available_semaphores.push(unsafe {
-                device.create_semaphore(&semaphore_create_info, None)
-            }.unwrap());
-
-            render_finished_semaphores.push(unsafe {
-                device.create_semaphore(&semaphore_create_info, None)
-            }.unwrap());
-
-            in_flight_fences.push(unsafe {
-                device.create_fence(&fence_create_info, None)
-            }.unwrap());
-        }
-
-        (image_available_semaphores, render_finished_semaphores, in_flight_fences)
-    }
-}
-
-// Commands
-impl VkController {
     pub fn draw_frame(&mut self) {
 
         if self.is_minimized && !self.frame_buffer_resized {
@@ -1255,103 +1225,139 @@ impl VkController {
 
         self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT;
     }
+}
 
-    fn wait_for_device(&self) {
+// Synchronization and utilities
+impl VkController {
+    fn create_sync_objects(device: &Device) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
+        let mut image_available_semaphores = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        let mut render_finished_semaphores = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        let mut in_flight_fences = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+
+        let semaphore_create_info = vk::SemaphoreCreateInfo {
+            s_type: StructureType::SEMAPHORE_CREATE_INFO,
+            ..Default::default()
+        };
+
+        let fence_create_info = vk::FenceCreateInfo {
+            s_type: StructureType::FENCE_CREATE_INFO,
+            flags: vk::FenceCreateFlags::SIGNALED,
+            ..Default::default()
+        };
+
+        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+
+            image_available_semaphores.push(unsafe {
+                device.create_semaphore(&semaphore_create_info, None)
+            }.unwrap());
+
+            render_finished_semaphores.push(unsafe {
+                device.create_semaphore(&semaphore_create_info, None)
+            }.unwrap());
+
+            in_flight_fences.push(unsafe {
+                device.create_fence(&fence_create_info, None)
+            }.unwrap());
+        }
+
+        (image_available_semaphores, render_finished_semaphores, in_flight_fences)
+    }
+
+    fn begin_single_time_command(device: &Device, command_pool: &vk::CommandPool) -> vk::CommandBuffer {
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_pool: *command_pool,
+            command_buffer_count: 1,
+            ..Default::default()
+        };
+
+        let command_buffer = unsafe {
+            device.allocate_command_buffers(&alloc_info).unwrap()[0]
+        };
+
+        let begin_info = vk::CommandBufferBeginInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
+
         unsafe {
-            self.device.device_wait_idle().unwrap();
+            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
+        }
+
+        command_buffer
+    }
+
+    fn end_single_time_command(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            device.end_command_buffer(command_buffer).unwrap();
+        }
+
+        let submit_info = vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            command_buffer_count: 1,
+            p_command_buffers: &command_buffer,
+            ..Default::default()
+        };
+
+        unsafe {
+            device.queue_submit(*graphics_queue, &[submit_info], vk::Fence::null()).unwrap();
+            device.queue_wait_idle(*graphics_queue).unwrap();
+            device.free_command_buffers(*command_pool, &[command_buffer]);
         }
     }
 
-    pub fn recreate_swapchain(&mut self) {
-        if self.window.inner_size().width == 0 || self.window.inner_size().height == 0 {
-            self.is_minimized = true;
-            return;
-        }
-        self.is_minimized = false;
+    fn copy_buffer(src_buffer: &vk::Buffer, dst_buffer: &vk::Buffer, size: vk::DeviceSize, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
+        let command_buffer = Self::begin_single_time_command(device, command_pool);
 
-        println!("Recreating swapchain!");
+        let copy_region = vk::BufferCopy {
+            size,
+            ..Default::default()
+        };
 
         unsafe {
-            self.device.device_wait_idle().unwrap();
+            device.cmd_copy_buffer(command_buffer, *src_buffer, *dst_buffer, &[copy_region]);
         }
 
-        self.cleanup_swapchain();
-
-        self.swapchain = Self::create_swapchain(&self.entry, &self.instance, &self.physical_device, &self.surface, &self.window, &self.swapchain_loader);
-        self.swapchain_images = Self::get_swapchain_images(&self.swapchain, &self.swapchain_loader);
-        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format);
-        let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
-        self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
-        (self.color_image, self.color_image_memory, self.color_image_view) = Self::create_color_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples);
-        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.msaa_samples);
-        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view, &self.color_image_view);
+        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
     }
 
-    pub fn cleanup(&mut self) {
+    fn copy_buffer_to_image(src_buffer: &vk::Buffer, dst_image: &vk::Image, width: u32, height: u32, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
+        let command_buffer = Self::begin_single_time_command(device, command_pool);
+
+        let region = vk::BufferImageCopy {
+            buffer_offset: 0,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: vk::Offset3D {
+                x: 0,
+                y: 0,
+                z: 0,
+            },
+            image_extent: vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            },
+        };
+
         unsafe {
-            self.wait_for_device();
-
-            self.cleanup_swapchain();
-
-            self.device.destroy_sampler(self.texture_sampler, None);
-            self.device.destroy_image_view(self.texture_image_view, None);
-
-            self.device.destroy_image(self.texture_image, None);
-            self.device.free_memory(self.texture_image_memory, None);
-
-            for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-                self.device.destroy_buffer(self.uniform_buffers[i], None);
-                self.device.free_memory(self.uniform_buffers_memory[i], None);
-            }
-
-            self.device.destroy_descriptor_pool(self.descriptor_pool, None);
-
-            self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
-
-            self.device.destroy_pipeline(self.graphics_pipeline, None);
-            self.device.destroy_pipeline_layout(self.pipeline_layout, None);
-            self.device.destroy_render_pass(self.render_pass, None);
-            
-            self.device.destroy_buffer(self.index_buffer, None);
-            self.device.free_memory(self.index_buffer_memory, None);
-
-            self.device.destroy_buffer(self.vertex_buffer, None);
-            self.device.free_memory(self.vertex_buffer_memory, None);
-
-            for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-                self.device.destroy_semaphore(self.render_finished_semaphores[i], None);
-                self.device.destroy_semaphore(self.image_available_semaphores[i], None);
-                self.device.destroy_fence(self.in_flight_fences[i], None);
-            }
-
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.device.destroy_device(None);
-
-            if IS_DEBUG_MODE {
-                DebugUtils::new(&self.entry, &self.instance).destroy_debug_utils_messenger(self.debug_messenger.unwrap(), None);
-            }
-
-            Surface::new(&self.entry, &self.instance).destroy_surface(self.surface, None);
-            self.instance.destroy_instance(None);
+            device.cmd_copy_buffer_to_image(command_buffer, *src_buffer, *dst_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
         }
+
+        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
     }
 }
 
-// Buffers
+// Resource management
 impl VkController {
-    fn find_memory_type(instance: &Instance, physical_device: &PhysicalDevice, type_filter: u32, properties: vk::MemoryPropertyFlags) -> Result<u32, Cow<'static, str>> {
-        let mem_properties = unsafe {
-            instance.get_physical_device_memory_properties(*physical_device)
-        };
-
-        for (i, mem_type) in mem_properties.memory_types.iter().enumerate() {
-            if type_filter & (1 << i) != 0 && mem_type.property_flags.contains(properties) {
-                return Ok(i as u32);
-            }
-        }
-        Err(Cow::from("Failed to find suitable memory type!"))
-    }
-
     fn create_vertex_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex]) -> (vk::Buffer, vk::DeviceMemory) {
         let size = std::mem::size_of_val(vertices);
         
@@ -1471,10 +1477,7 @@ impl VkController {
             std::ptr::copy_nonoverlapping(&ubo as *const UniformBufferObject as *const std::ffi::c_void, self.uniform_buffers_mapping[current_image], std::mem::size_of::<UniformBufferObject>());
         }
     }
-}
 
-// Other
-impl VkController {
     fn create_descriptor_set_layout(device: &Device) -> vk::DescriptorSetLayout {
         let ubo_layout_binding = vk::DescriptorSetLayoutBinding {
             binding: 0,
@@ -1592,10 +1595,7 @@ impl VkController {
 
         descriptor_sets
     }
-}
 
-// Images
-impl VkController {
     fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) -> (vk::Image, vk::DeviceMemory, u32) {
         let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = binding.to_rgba8();
@@ -1958,105 +1958,7 @@ impl VkController {
 
         (color_image, color_image_memory, color_image_view)
     }
-}
 
-// Buffers
-impl VkController {
-    fn begin_single_time_command(device: &Device, command_pool: &vk::CommandPool) -> vk::CommandBuffer {
-        let alloc_info = vk::CommandBufferAllocateInfo {
-            s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
-            level: vk::CommandBufferLevel::PRIMARY,
-            command_pool: *command_pool,
-            command_buffer_count: 1,
-            ..Default::default()
-        };
-
-        let command_buffer = unsafe {
-            device.allocate_command_buffers(&alloc_info).unwrap()[0]
-        };
-
-        let begin_info = vk::CommandBufferBeginInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
-            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
-        }
-
-        command_buffer
-    }
-
-    fn end_single_time_command(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, command_buffer: vk::CommandBuffer) {
-        unsafe {
-            device.end_command_buffer(command_buffer).unwrap();
-        }
-
-        let submit_info = vk::SubmitInfo {
-            s_type: vk::StructureType::SUBMIT_INFO,
-            command_buffer_count: 1,
-            p_command_buffers: &command_buffer,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.queue_submit(*graphics_queue, &[submit_info], vk::Fence::null()).unwrap();
-            device.queue_wait_idle(*graphics_queue).unwrap();
-            device.free_command_buffers(*command_pool, &[command_buffer]);
-        }
-    }
-
-    fn copy_buffer(src_buffer: &vk::Buffer, dst_buffer: &vk::Buffer, size: vk::DeviceSize, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
-        let command_buffer = Self::begin_single_time_command(device, command_pool);
-
-        let copy_region = vk::BufferCopy {
-            size,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.cmd_copy_buffer(command_buffer, *src_buffer, *dst_buffer, &[copy_region]);
-        }
-
-        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
-    }
-
-    fn copy_buffer_to_image(src_buffer: &vk::Buffer, dst_image: &vk::Image, width: u32, height: u32, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
-        let command_buffer = Self::begin_single_time_command(device, command_pool);
-
-        let region = vk::BufferImageCopy {
-            buffer_offset: 0,
-            buffer_row_length: 0,
-            buffer_image_height: 0,
-            image_subresource: vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-            image_offset: vk::Offset3D {
-                x: 0,
-                y: 0,
-                z: 0,
-            },
-            image_extent: vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            },
-        };
-
-        unsafe {
-            device.cmd_copy_buffer_to_image(command_buffer, *src_buffer, *dst_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
-        }
-
-        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
-    }
-}
-
-// Other
-impl VkController {
     fn load_model(path: &str) -> (Vec<Vertex>, Vec<u32>) {
         let (models, _) = tobj::load_obj(path, &tobj::LoadOptions::default()).unwrap();
         let mut vertices = Vec::new();
@@ -2082,5 +1984,71 @@ impl VkController {
         }
 
         (vertices, indices)
+    }
+
+    fn find_memory_type(instance: &Instance, physical_device: &PhysicalDevice, type_filter: u32, properties: vk::MemoryPropertyFlags) -> Result<u32, Cow<'static, str>> {
+        let mem_properties = unsafe {
+            instance.get_physical_device_memory_properties(*physical_device)
+        };
+
+        for (i, mem_type) in mem_properties.memory_types.iter().enumerate() {
+            if type_filter & (1 << i) != 0 && mem_type.property_flags.contains(properties) {
+                return Ok(i as u32);
+            }
+        }
+        Err(Cow::from("Failed to find suitable memory type!"))
+    }
+}
+
+// Debugging and validation
+impl VkController {
+    fn setup_debug_messenger(entry: &Entry, instance: &Instance, debug_utils_create_info: DebugUtilsMessengerCreateInfoEXT) -> vk::DebugUtilsMessengerEXT {
+        let debug_utils_loader = DebugUtils::new(entry, instance);
+        match unsafe {
+            debug_utils_loader.create_debug_utils_messenger(&debug_utils_create_info, None)
+        } {
+            Ok(messenger) => messenger,
+            Err(e) => panic!("Failed to set up debug messenger: {:?}", e),
+        }
+    }
+
+    fn get_debug_messenger_create_info() -> DebugUtilsMessengerCreateInfoEXT {
+        DebugUtilsMessengerCreateInfoEXT {
+            s_type: StructureType::DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+            message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::INFO | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE,
+            message_type: vk::DebugUtilsMessageTypeFlagsEXT::GENERAL | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+            pfn_user_callback: Some(Self::debug_callback),
+            ..Default::default()
+        }
+    }
+
+    unsafe extern "system" fn debug_callback(
+        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT,
+        message_type: vk::DebugUtilsMessageTypeFlagsEXT,
+        p_callback_data: *const vk::DebugUtilsMessengerCallbackDataEXT,
+        _p_user_data: *mut std::ffi::c_void
+    ) -> vk::Bool32 {
+        
+        let debug_type = match message_type {
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL => "General",
+            vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE => "Performance",
+            vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION => "Validation",
+            _ => "Unknown",
+        };
+
+        let debug_severity = match message_severity {
+            vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE => "Verbose",
+            vk::DebugUtilsMessageSeverityFlagsEXT::INFO => "Info",
+            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING => "Warning",
+            vk::DebugUtilsMessageSeverityFlagsEXT::ERROR => "Error",
+            _ => "Unknown",
+        };
+
+        if message_severity >= vk::DebugUtilsMessageSeverityFlagsEXT::WARNING {
+            let message = std::ffi::CStr::from_ptr((*p_callback_data).p_message).to_string_lossy();
+            println!("[Debug][{debug_type}][{debug_severity}]: {:?}", message);
+        }
+
+        vk::FALSE
     }
 }
