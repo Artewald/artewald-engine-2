@@ -110,26 +110,26 @@ impl VkController {
         let swapchain_image_format = Self::choose_swap_surface_format(&Self::query_swapchain_support(&entry, &instance, &physical_device, &surface).formats).format;
 
         let swapchain_extent = Self::choose_swap_extent(&Self::query_swapchain_support(&entry, &instance, &physical_device, &surface).capabilities, &window);
-
-        let command_pool = Self::create_command_pool(&device, &queue_families);
-
-        let (texture_image, texture_image_memory, mip_levels) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
-
-        let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format, mip_levels);
-
-        let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
-
-        let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout);
+        
+        let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format);
 
         let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples);
+        
+        let descriptor_set_layout = Self::create_descriptor_set_layout(&device);
+        
+        let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout);
 
         let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples);
         
-        let (color_image, color_image_memory, color_image_view) = Self::create_color_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, swapchain_image_format, &swapchain_extent, mip_levels,  msaa_samples);
+        let command_pool = Self::create_command_pool(&device, &queue_families);
 
-        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent, mip_levels, msaa_samples);
+        let (color_image, color_image_memory, color_image_view) = Self::create_color_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, swapchain_image_format, &swapchain_extent, msaa_samples);
+        
+        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent, msaa_samples);
         
         let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_view, &color_image_view);
+        
+        let (texture_image, texture_image_memory, mip_levels) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue);
 
         let texture_image_view = Self::create_texture_image_view(&device, &texture_image, mip_levels);
 
@@ -142,15 +142,15 @@ impl VkController {
         let (index_buffer, index_buffer_memory) = Self::create_index_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue, &indices);
 
         let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapping) = Self::create_uniform_buffers(&instance, &physical_device, &device);
-
-        let command_buffers = Self::create_command_buffers(&device, &command_pool);
-
-        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device);
-
+        
         let descriptor_pool = Self::create_descriptor_pool(&device);
-
+        
         let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_buffers, &descriptor_set_layout, &texture_image_view, &texture_sampler);
-
+        
+        let command_buffers = Self::create_command_buffers(&device, &command_pool);
+        
+        let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device);
+        
         Self {
             window,
             entry,
@@ -673,11 +673,11 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format, mip_levels: u32) -> Vec<ImageView> {
+    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format) -> Vec<ImageView> {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
         for i in 0..swapchain_images.len() {
-            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, mip_levels));
+            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, 1));
         }
 
         swapchain_image_views
@@ -1191,6 +1191,8 @@ impl VkController {
             Err(error) => panic!("Failed to acquire next image: {:?}", error),
         };
 
+        self.update_uniform_buffer(self.current_frame);
+
         unsafe {
             self.device.reset_fences(&[self.in_flight_fences[self.current_frame]]).unwrap();
         }
@@ -1206,8 +1208,6 @@ impl VkController {
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
 
         let command_buffers = [self.command_buffers[self.current_frame]];
-
-        self.update_uniform_buffer(self.current_frame);
 
         let submit_info = vk::SubmitInfo {
             s_type: StructureType::SUBMIT_INFO,
@@ -1279,11 +1279,11 @@ impl VkController {
 
         self.swapchain = Self::create_swapchain(&self.entry, &self.instance, &self.physical_device, &self.surface, &self.window, &self.swapchain_loader);
         self.swapchain_images = Self::get_swapchain_images(&self.swapchain, &self.swapchain_loader);
-        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format, self.mip_levels);
+        self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format);
         let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
-        (self.color_image, self.color_image_memory, self.color_image_view) = Self::create_color_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, self.swapchain_image_format, &self.swapchain_extent, self.mip_levels, self.msaa_samples);
-        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.mip_levels, self.msaa_samples);
+        (self.color_image, self.color_image_memory, self.color_image_view) = Self::create_color_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples);
+        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.msaa_samples);
         self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view, &self.color_image_view);
     }
 
@@ -1647,8 +1647,8 @@ impl VkController {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_array_layer: 0,
                 layer_count: 1,
-                base_mip_level: 0,
                 level_count: 1,
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -1727,6 +1727,16 @@ impl VkController {
             }
         }
 
+        image_barrier.subresource_range.base_mip_level = mip_levels - 1;
+        image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+        unsafe {
+            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, DependencyFlags::empty(), &[], &[], &[image_barrier]);
+        } 
+
         Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
     }
 
@@ -1780,20 +1790,7 @@ impl VkController {
     fn transition_image_layout(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, mip_levels: u32) {
         let command_buffer = Self::begin_single_time_command(device, command_pool);
 
-        let source_stage = match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
-            vk::ImageLayout::UNDEFINED => vk::PipelineStageFlags::TOP_OF_PIPE,
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::PipelineStageFlags::TRANSFER,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::PipelineStageFlags::TOP_OF_PIPE,
-            _ => panic!("Unsupported layout transition!"),
-        };
-        let destination_stage = match new_layout {
-            vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::PipelineStageFlags::TRANSFER,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            _ => panic!("Unsupported layout transition!"),
-        };
-
-        let barrier = vk::ImageMemoryBarrier {
+        let mut barrier = vk::ImageMemoryBarrier {
             s_type: StructureType::IMAGE_MEMORY_BARRIER,
             old_layout,
             new_layout,
@@ -1801,35 +1798,39 @@ impl VkController {
             dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
             image: *image,
             subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: match new_layout {
-                    vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => {
-                        let mut depth = vk::ImageAspectFlags::DEPTH;
-                        
-                        if Self::has_stencil_component(format) {
-                            depth |= vk::ImageAspectFlags::STENCIL;
-                        }
-
-                        depth
-                    },
-                    _ => vk::ImageAspectFlags::COLOR,
-                },
+                aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
                 level_count: mip_levels,
                 base_array_layer: 0,
                 layer_count: 1,
             },
-            src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
-                vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-                _ => panic!("Unsupported layout transition!"),
-            },
-            dst_access_mask: match new_layout {
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
-                vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                _ => panic!("Unsupported layout transition!"),
-            },
+            // src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
+            //     vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
+            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+            //     _ => panic!("Unsupported layout transition!"),
+            // },
+            // dst_access_mask: match new_layout {
+            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+            //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
+            //     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            //     _ => panic!("Unsupported layout transition!"),
+            // },
             ..Default::default()
+        };
+
+        let (source_stage, destination_stage) = match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => {
+                barrier.src_access_mask = vk::AccessFlags::empty();
+                barrier.dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+                (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER)
+            },
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
+                barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+                barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+                (vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER)
+            },
+            //(vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS),
+            _ => panic!("Unsupported layout transition! {} {}", old_layout.as_raw(), new_layout.as_raw()),
         };
 
         unsafe {
@@ -1895,14 +1896,12 @@ impl VkController {
         }
     }
 
-    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D, mip_levels: u32, msaa_samples: vk::SampleCountFlags) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D, msaa_samples: vk::SampleCountFlags) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
         let depth_format = Self::find_depth_format(instance, physical_device);
 
-        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, mip_levels, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
-        let depth_image_view = Self::create_image_view(device, &depth_image, depth_format, vk::ImageAspectFlags::DEPTH, mip_levels);
-
-        Self::transition_image_layout(device, command_pool, graphics_queue, &depth_image, depth_format, vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL, mip_levels);
+        let depth_image_view = Self::create_image_view(device, &depth_image, depth_format, vk::ImageAspectFlags::DEPTH, 1);
 
         (depth_image, depth_image_memory, depth_image_view)
     }
@@ -1952,10 +1951,10 @@ impl VkController {
         }
     }
 
-    fn create_color_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_format: vk::Format, swapchain_extent: &vk::Extent2D, mip_levels: u32, num_samples: vk::SampleCountFlags) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
-        let (color_image, color_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, mip_levels, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
+    fn create_color_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_format: vk::Format, swapchain_extent: &vk::Extent2D, num_samples: vk::SampleCountFlags) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+        let (color_image, color_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL);
 
-        let color_image_view = Self::create_image_view(device, &color_image, swapchain_format, vk::ImageAspectFlags::COLOR, mip_levels);
+        let color_image_view = Self::create_image_view(device, &color_image, swapchain_format, vk::ImageAspectFlags::COLOR, 1);
 
         (color_image, color_image_memory, color_image_view)
     }
