@@ -1,12 +1,23 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::HashMap};
 
 use ash::{vk::{self, StructureType}, Instance, Device};
 
+type MemoryTypeIndex = u32;
+type MemoryOffset = vk::DeviceSize;
+
+pub struct AllocationInfo {
+    buffer: Option<vk::Buffer>,
+    image: Option<vk::Image>,
+    memory_index: MemoryTypeIndex,
+    memory_start: MemoryOffset,
+    memory_end: vk::DeviceSize,
+}
 
 pub struct VkAllocator {
     device: Device,
     physical_device: vk::PhysicalDevice,
     instance: Instance,
+    allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<(vk::DeviceSize, vk::DeviceSize)>)>>,
 }
 
 impl VkAllocator {
@@ -15,6 +26,7 @@ impl VkAllocator {
             device,
             physical_device,
             instance,
+            allocations: HashMap::new(),
         }
     }
 
@@ -44,17 +56,84 @@ impl VkAllocator {
 
         println!("Should not allocate memory for many different buffers, but rather have one big buffer and an allocator that uses offsets when binding buffer to memory!");
         let buffer_memory = unsafe {
-            self.device.allocate_memory(&alloc_info, None)
+            self.device.allocate_memory(&alloc_info, None) // We want to avoid this call, we should have one big buffer and an allocator that uses offsets when binding buffer to memory!
         }.unwrap();
 
         unsafe {
-            self.device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap();
+            self.device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap(); // Here we would put the offset that we would use if we had one big buffer and an allocator that uses offsets when binding buffer to memory!
         }
 
         (buffer, buffer_memory)
     }
 
-    pub fn create_device_buffer
+    fn allocate_new_device_memory(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) {
+        let alloc_info = vk::MemoryAllocateInfo {
+            s_type: StructureType::MEMORY_ALLOCATE_INFO,
+            allocation_size: size,
+            memory_type_index,
+            ..Default::default()
+        };
+
+        let memory = unsafe {
+            self.device.allocate_memory(&alloc_info, None)
+        }.unwrap();
+
+        self.allocations.entry(memory_type_index).or_default().push((memory, vec![(0, size)]));
+    }
+
+    fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) -> Option<(vk::DeviceMemory, AllocationInfo)> {
+        let mut allocation = self.find_allocation(memory_type_index, size);
+
+        if allocation.is_none() {
+            self.allocate_new_device_memory(memory_type_index, size);
+            allocation = self.find_allocation(memory_type_index, size);
+        }
+
+        allocation
+    }
+
+    fn find_allocation(&mut self, memory_type_index: u32, size: u64) -> Option<(vk::DeviceMemory, AllocationInfo)> {
+        if let Some(memories) = self.allocations.get_mut(&memory_type_index) {
+            for (memory, free_ranges) in memories.iter_mut() {
+                for (start, end) in free_ranges.iter_mut() {
+                    if *end - *start >= size {
+                        let allocation = Some((*memory, AllocationInfo { // TODO handle adding buffer and image to allocation info when actually making them
+                            memory_index: memory_type_index,
+                            memory_start: *start,
+                            memory_end: *start + size - 1,
+                            buffer: None,
+                            image: None, 
+                        }));
+                        *start += size;
+                        return allocation;
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    pub fn free_memory_allocation(&mut self, allocation_info: AllocationInfo) -> Result<(), Cow<'static, str>> {
+        if let Some(memories) = self.allocations.get_mut(&allocation_info.memory_index) {
+            for (_, free_ranges) in memories.iter_mut() {
+                free_ranges.push((allocation_info.memory_start, allocation_info.memory_end));
+                
+                free_ranges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+                let mut i = 0;
+                while i < free_ranges.len() - 1 {
+                    if free_ranges[i].1 == free_ranges[i + 1].0 - 1 {
+                        free_ranges[i].1 = free_ranges[i + 1].1;
+                        free_ranges.remove(i + 1);
+                    }
+                    i += 1;
+                }
+            }
+        } else {
+            return Err(Cow::from("Failed to free memory!"));
+        }
+        Ok(())
+    }
 
     fn find_memory_type(&self, type_filter: u32, properties: vk::MemoryPropertyFlags) -> Result<u32, Cow<'static, str>> {
         let mem_properties = unsafe {

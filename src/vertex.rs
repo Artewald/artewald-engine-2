@@ -1,6 +1,7 @@
 use ash::vk;
 use memoffset::offset_of;
 use nalgebra_glm as glm;
+use serde::{Serialize, Deserialize, ser::SerializeStruct};
 use std::hash::{Hash, Hasher};
 
 #[derive(Debug, Clone, Copy)]
@@ -72,3 +73,13 @@ impl PartialEq for Vertex {
 }
 
 impl Eq for Vertex {}
+
+impl Serialize for Vertex {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        let mut state = serializer.serialize_struct("Vertex", 3)?;
+        state.serialize_field("position", &self.position.as_slice())?;
+        state.serialize_field("color", &self.color.as_slice())?;
+        state.serialize_field("tex_coord", &self.tex_coord.as_slice())?;
+        state.end()
+    }
+}
