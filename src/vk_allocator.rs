@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{borrow::Cow, collections::HashMap, rc::Rc};
 
 use ash::{vk::{self, StructureType}, Instance, Device};
 
@@ -16,16 +16,16 @@ pub struct AllocationInfo {
 }
 
 pub struct VkAllocator {
-    device: Device,
+    device: Rc<Device>,
     physical_device: vk::PhysicalDevice,
-    instance: Instance,
+    instance: Rc<Instance>,
     allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<MemorySizeRange>)>>,
 }
 
 impl VkAllocator {
     const DEFAULT_MEMORY_BYTE_SIZE: vk::DeviceSize = 256_000_000; // 256 MB 
 
-    pub fn new(instance: Instance, physical_device: vk::PhysicalDevice, device: Device) -> Self {
+    pub fn new(instance: Rc<Instance>, physical_device: vk::PhysicalDevice, device: Rc<Device>) -> Self {
         Self {
             device,
             physical_device,

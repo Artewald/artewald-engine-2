@@ -1,4 +1,4 @@
-use std::{collections::{HashSet, HashMap, hash_map}, fs::read_to_string, borrow::Cow, time::Instant};
+use std::{collections::{HashSet, HashMap, hash_map}, fs::read_to_string, borrow::Cow, time::Instant, rc::Rc};
 
 use ash::{Entry, Instance, vk::{SurfaceKHR, PhysicalDevice, DeviceQueueCreateInfo, DeviceCreateInfo, Queue, SwapchainCreateInfoKHR, ImageView, ImageViewCreateInfo, StructureType, InstanceCreateFlags, InstanceCreateInfo, KhrPortabilityEnumerationFn, self, DebugUtilsMessengerCreateInfoEXT, SwapchainKHR, Image, ComponentMapping, ImageSubresourceRange, DescriptorPool, DependencyFlags}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -19,10 +19,10 @@ const IS_DEBUG_MODE: bool = false;
 pub struct VkController {
     window: Window,
     entry: Entry,
-    instance: Instance,
+    instance: Rc<Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
     physical_device: PhysicalDevice,
-    device: Device,
+    device: Rc<Device>,
     graphics_queue: Queue,
     present_queue: Queue,
     surface: SurfaceKHR,
@@ -104,7 +104,7 @@ impl VkController {
         } else {
             None
         };
-        let instance = Self::create_instance(&entry, application_name, &window, debug_messenger_create_info.as_ref());
+        let instance = Rc::new(Self::create_instance(&entry, application_name, &window, debug_messenger_create_info.as_ref()));
 
         let mut debug_messenger = None;
         if IS_DEBUG_MODE {
@@ -117,9 +117,9 @@ impl VkController {
 
         let queue_families = Self::find_queue_families(&entry, &instance, &physical_device, &surface);
         
-        let device = Self::create_logical_device(&entry, &instance, &physical_device, &surface);
+        let device = Rc::new(Self::create_logical_device(&entry, &instance, &physical_device, &surface));
 
-        let allocator = VkAllocator::new(instance, physical_device, device);
+        let allocator = VkAllocator::new(instance.clone(), physical_device, device.clone());
 
         let (graphics_queue, present_queue) = Self::create_graphics_and_present_queue(&device, &queue_families);
 
