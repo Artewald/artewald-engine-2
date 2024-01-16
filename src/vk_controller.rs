@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{vertex::Vertex, graphics_objects::UniformBufferObject};
+use crate::{vertex::Vertex, graphics_objects::UniformBufferObject, vk_allocator::VkAllocator};
 
 
 
@@ -69,6 +69,7 @@ pub struct VkController {
     depth_image_memory: vk::DeviceMemory,
     depth_image_view: vk::ImageView,
     msaa_samples: vk::SampleCountFlags,
+    allocator: VkAllocator,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -117,6 +118,8 @@ impl VkController {
         let queue_families = Self::find_queue_families(&entry, &instance, &physical_device, &surface);
         
         let device = Self::create_logical_device(&entry, &instance, &physical_device, &surface);
+
+        let allocator = VkAllocator::new(instance, physical_device, device);
 
         let (graphics_queue, present_queue) = Self::create_graphics_and_present_queue(&device, &queue_families);
 
@@ -223,6 +226,7 @@ impl VkController {
             indices,
             mip_levels,
             msaa_samples,
+            allocator,
         }
     }
 
