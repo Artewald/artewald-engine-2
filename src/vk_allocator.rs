@@ -21,6 +21,8 @@ pub struct VkAllocator {
 }
 
 impl VkAllocator {
+    const DEFAULT_MEMORY_BYTE_SIZE: vk::DeviceSize = 256_000_000; // 256 MB 
+
     pub fn new(device: Device, physical_device: vk::PhysicalDevice, instance: Instance) -> Self {
         Self {
             device,
@@ -30,7 +32,7 @@ impl VkAllocator {
         }
     }
 
-    pub fn create_buffer(&self, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags) -> (vk::Buffer, vk::DeviceMemory) {
+    pub fn create_buffer(&mut self, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags) -> AllocationInfo {
         let buffer_info = vk::BufferCreateInfo {
             s_type: StructureType::BUFFER_CREATE_INFO,
             size,
@@ -54,22 +56,23 @@ impl VkAllocator {
             ..Default::default()
         };
 
-        println!("Should not allocate memory for many different buffers, but rather have one big buffer and an allocator that uses offsets when binding buffer to memory!");
-        let buffer_memory = unsafe {
-            self.device.allocate_memory(&alloc_info, None) // We want to avoid this call, we should have one big buffer and an allocator that uses offsets when binding buffer to memory!
-        }.unwrap();
+        let (buffer_memory, mut allocation_info) = self.get_allocation(alloc_info.memory_type_index, alloc_info.allocation_size).unwrap();
 
         unsafe {
-            self.device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap(); // Here we would put the offset that we would use if we had one big buffer and an allocator that uses offsets when binding buffer to memory!
+            self.device.bind_buffer_memory(buffer, buffer_memory, allocation_info.memory_start).unwrap();
         }
 
-        (buffer, buffer_memory)
+        allocation_info.buffer = Some(buffer);
+
+        allocation_info
     }
 
     fn allocate_new_device_memory(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) {
+        let allocated_size = size.max(Self::DEFAULT_MEMORY_BYTE_SIZE);
+        
         let alloc_info = vk::MemoryAllocateInfo {
             s_type: StructureType::MEMORY_ALLOCATE_INFO,
-            allocation_size: size,
+            allocation_size: allocated_size,
             memory_type_index,
             ..Default::default()
         };
@@ -78,7 +81,7 @@ impl VkAllocator {
             self.device.allocate_memory(&alloc_info, None)
         }.unwrap();
 
-        self.allocations.entry(memory_type_index).or_default().push((memory, vec![(0, size)]));
+        self.allocations.entry(memory_type_index).or_default().push((memory, vec![(0, allocated_size)]));
     }
 
     fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) -> Option<(vk::DeviceMemory, AllocationInfo)> {
