@@ -1,10 +1,11 @@
-use std::{borrow::Cow, collections::HashMap, rc::Rc};
+use std::{borrow::Cow, collections::HashMap, rc::Rc, ffi::c_void};
 
-use ash::{vk::{self, StructureType}, Instance, Device};
+use ash::{vk::{self, StructureType, SystemAllocationScope}, Instance, Device};
 
 type MemoryTypeIndex = u32;
 type MemoryOffset = vk::DeviceSize;
 type MemorySizeRange = (vk::DeviceSize, vk::DeviceSize);
+type Alignment = usize;
 
 pub struct AllocationInfo {
     buffer: Option<vk::Buffer>,
@@ -19,18 +20,21 @@ pub struct VkAllocator {
     device: Rc<Device>,
     physical_device: vk::PhysicalDevice,
     instance: Rc<Instance>,
-    allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<MemorySizeRange>)>>,
+    device_allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<MemorySizeRange>)>>,
+    host_allocations: HashMap<Alignment, Vec<(u8, usize, Vec<(usize, usize)>)>>,
 }
 
+// Device memory allocation
 impl VkAllocator {
-    const DEFAULT_MEMORY_BYTE_SIZE: vk::DeviceSize = 256_000_000; // 256 MB 
+    const DEFAULT_DEVICE_MEMORY_ALLOCATION_BYTE_SIZE: vk::DeviceSize = 256_000_000; // 256 MB 
 
     pub fn new(instance: Rc<Instance>, physical_device: vk::PhysicalDevice, device: Rc<Device>) -> Self {
         Self {
             device,
             physical_device,
             instance,
-            allocations: HashMap::new(),
+            device_allocations: HashMap::new(),
+            host_allocations: HashMap::new(),
         }
     }
 
@@ -154,7 +158,7 @@ impl VkAllocator {
     }    
 
     pub fn free_memory_allocation(&mut self, allocation_info: AllocationInfo) -> Result<(), Cow<'static, str>> {
-        if let Some(memories) = self.allocations.get_mut(&allocation_info.memory_index) {
+        if let Some(memories) = self.device_allocations.get_mut(&allocation_info.memory_index) {
             for (_, free_ranges) in memories.iter_mut() {
                 free_ranges.push((allocation_info.memory_start, allocation_info.memory_end));
                 
@@ -321,7 +325,7 @@ impl VkAllocator {
     }
 
     fn allocate_new_device_memory(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) -> Result<(), Cow<'static, str>> {
-        let allocated_size = size.max(Self::DEFAULT_MEMORY_BYTE_SIZE);
+        let allocated_size = size.max(Self::DEFAULT_DEVICE_MEMORY_ALLOCATION_BYTE_SIZE);
         
         let alloc_info = vk::MemoryAllocateInfo {
             s_type: StructureType::MEMORY_ALLOCATE_INFO,
@@ -337,7 +341,7 @@ impl VkAllocator {
             }
         };
 
-        self.allocations.entry(memory_type_index).or_default().push((memory, vec![(0, allocated_size)]));
+        self.device_allocations.entry(memory_type_index).or_default().push((memory, vec![(0, allocated_size)]));
         Ok(())
     }
 
@@ -353,7 +357,7 @@ impl VkAllocator {
     }
 
     fn find_allocation(&mut self, memory_type_index: u32, size: u64) -> Result<(vk::DeviceMemory, AllocationInfo), Cow<'static, str>> {
-        if let Some(memories) = self.allocations.get_mut(&memory_type_index) {
+        if let Some(memories) = self.device_allocations.get_mut(&memory_type_index) {
             for (memory, free_ranges) in memories.iter_mut() {
                 for (start, end) in free_ranges.iter_mut() {
                     if *end - *start >= size {
@@ -386,4 +390,53 @@ impl VkAllocator {
         }
         Err(Cow::from("Failed to find suitable memory type!"))
     }
+}
+
+// Host memory allocation
+impl VkAllocator {
+    const DEFAULT_HOST_MEMORY_ALLOCATION_BYTE_SIZE: usize = 512_000; // 512 KB
+
+    pub fn allocate_host_memory(&mut self, size: usize, alignment: usize) -> Result<*mut c_void, Cow<'static, str>> {
+        let allocation = self.find_host_allocation(size, alignment);
+
+        if allocation.is_err() {
+            self.allocate_new_host_memory(size, alignment)?;
+            allocation = self.find_host_allocation(size, alignment);
+        }
+
+        allocation
+    }
+
+    fn find_host_allocation(&mut self, size: usize, alignment: usize) -> Result<*mut c_void, Cow<'static, str>> {
+        if let Some(allocations) = self.host_allocations.get_mut(&alignment) {
+            for (start, end) in allocations.iter_mut() {
+                if *end - *start >= size {
+                    let allocation = Ok(*start as *mut c_void);
+                    *start += size;
+                    return allocation;
+                }
+            }
+        }
+        Err(Cow::from("Failed to find host allocation!"))
+    }
+
+    unsafe fn allocate_new_host_memory(&mut self, size: usize, alignment: usize) -> Result<(), Cow<'static, str>> {
+        let allocated_size = size.max(Self::DEFAULT_HOST_MEMORY_ALLOCATION_BYTE_SIZE);
+
+        let layout = std::alloc::Layout::from_size_align(allocated_size, alignment).unwrap();
+
+        let ptr = std::alloc::alloc(layout);
+        if ptr.is_null() {
+            return Err(Cow::from("Failed to allocate new host memory!"));
+        }
+
+        //self.host_allocations.entry(alignment).or_default().push((ptr as usize, ptr as usize + allocated_size));
+
+        Ok(())
+    }
+}
+
+unsafe fn pfn_allocation(p_user_data: *mut c_void, size: usize, alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
+    let allocator = &mut *(p_user_data as *mut VkAllocator);
+    
 }
