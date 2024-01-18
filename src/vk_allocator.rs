@@ -16,12 +16,20 @@ pub struct AllocationInfo {
     memory: vk::DeviceMemory,
 }
 
+struct HostAllocationPool {
+    start_ptr: *mut u8,
+    size: usize,
+    alignment: Alignment,
+    free_allocations: Vec<(usize, usize)>,
+}
+
 pub struct VkAllocator {
     device: Rc<Device>,
     physical_device: vk::PhysicalDevice,
     instance: Rc<Instance>,
     device_allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<MemorySizeRange>)>>,
-    host_allocations: HashMap<Alignment, Vec<(u8, usize, Vec<(usize, usize)>)>>,
+    host_allocations: HashMap<Alignment, Vec<HostAllocationPool>>,
+    allocated_host_pointers: HashMap<*mut c_void, (Alignment, usize)>,
 }
 
 // Device memory allocation
@@ -35,6 +43,7 @@ impl VkAllocator {
             instance,
             device_allocations: HashMap::new(),
             host_allocations: HashMap::new(),
+            allocated_host_pointers: HashMap::new(),
         }
     }
 
@@ -397,10 +406,12 @@ impl VkAllocator {
     const DEFAULT_HOST_MEMORY_ALLOCATION_BYTE_SIZE: usize = 512_000; // 512 KB
 
     pub fn allocate_host_memory(&mut self, size: usize, alignment: usize) -> Result<*mut c_void, Cow<'static, str>> {
-        let allocation = self.find_host_allocation(size, alignment);
+        let mut allocation = self.find_host_allocation(size, alignment);
 
         if allocation.is_err() {
-            self.allocate_new_host_memory(size, alignment)?;
+            unsafe {
+                self.allocate_new_host_memory(size, alignment)?;
+            }
             allocation = self.find_host_allocation(size, alignment);
         }
 
@@ -409,11 +420,19 @@ impl VkAllocator {
 
     fn find_host_allocation(&mut self, size: usize, alignment: usize) -> Result<*mut c_void, Cow<'static, str>> {
         if let Some(allocations) = self.host_allocations.get_mut(&alignment) {
-            for (start, end) in allocations.iter_mut() {
-                if *end - *start >= size {
-                    let allocation = Ok(*start as *mut c_void);
-                    *start += size;
-                    return allocation;
+            for allocation in allocations.iter_mut() {
+                for free_range in allocation.free_allocations.iter_mut() {
+                    if free_range.1 - free_range.0 >= size {
+                        let allocation_ptr = unsafe { allocation.start_ptr.offset(free_range.0 as isize) as *mut c_void};
+                        let previous = self.allocated_host_pointers.get(&allocation_ptr);
+                        if previous.is_some() {
+                            return Err(Cow::from("Failed to find host allocation! Because the allocation was already allocated!"));
+                        }
+                        self.allocated_host_pointers.insert(allocation_ptr, (alignment, size));
+                        // Add size and padding to allocation, so that the alignment is correct for the next allocation as well
+                        free_range.0 += size + ((alignment - (size % alignment)) % alignment);
+                        return Ok(allocation_ptr);
+                    }
                 }
             }
         }
@@ -430,13 +449,118 @@ impl VkAllocator {
             return Err(Cow::from("Failed to allocate new host memory!"));
         }
 
-        //self.host_allocations.entry(alignment).or_default().push((ptr as usize, ptr as usize + allocated_size));
+        let allocation = HostAllocationPool {
+            start_ptr: ptr,
+            size: allocated_size,
+            alignment,
+            free_allocations: vec![(0, allocated_size - 1)],
+        };
+
+        self.host_allocations.entry(alignment).or_default().push(allocation);
 
         Ok(())
     }
+
+    pub unsafe fn free_host_memory(&mut self, ptr: *mut c_void) -> Result<(), Cow<'static, str>> {
+        if let Some((alignment, size)) = self.allocated_host_pointers.remove(&ptr) {
+            if let Some(allocations) = self.host_allocations.get_mut(&alignment) {
+                for allocation in allocations.iter_mut() {
+                    if allocation.start_ptr == ptr as *mut u8 {
+                        allocation.free_allocations.push((0, size - 1));
+                        allocation.free_allocations.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                        let mut i = 0;
+                        while i < allocation.free_allocations.len() - 1 {
+                            if allocation.free_allocations[i].1 == allocation.free_allocations[i + 1].0 - 1 {
+                                allocation.free_allocations[i].1 = allocation.free_allocations[i + 1].1;
+                                allocation.free_allocations.remove(i + 1);
+                            }
+                            i += 1;
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        Err(Cow::from("Failed to free host memory!"))
+    }
+
+    pub unsafe fn free_all_host_memory(&mut self) -> Result<(), Cow<'static, str>> {
+        for (_, allocations) in self.host_allocations.iter_mut() {
+            for allocation in allocations.iter_mut() {
+                std::alloc::dealloc(allocation.start_ptr, std::alloc::Layout::from_size_align(allocation.size, allocation.alignment).unwrap());
+            }
+        }
+        self.host_allocations.clear();
+        self.allocated_host_pointers.clear();
+        Ok(())
+    }
+
+    pub unsafe fn get_allocation_callbacks(&mut self) -> vk::AllocationCallbacks {
+        let callbacks = vk::AllocationCallbacks {
+            p_user_data: self as *mut VkAllocator as *mut c_void,
+            pfn_allocation: Some(pfn_allocation),
+            pfn_reallocation: None,
+            pfn_free: None,
+            pfn_internal_allocation: None,
+            pfn_internal_free: None,
+        };
+        callbacks
+    }
 }
 
-unsafe fn pfn_allocation(p_user_data: *mut c_void, size: usize, alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
+unsafe extern "system" fn pfn_allocation(p_user_data: *mut c_void, size: usize, alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
     let allocator = &mut *(p_user_data as *mut VkAllocator);
     
+    match allocation_scope {
+        SystemAllocationScope::COMMAND => {
+            match allocator.allocate_host_memory(size, alignment) {
+                Ok(ptr) => ptr,
+                Err(err) => {
+                    eprintln!("Failed to allocate host memory when allocating command because: {}", err);
+                    std::ptr::null_mut()
+                },
+            }
+        },
+        SystemAllocationScope::OBJECT => {
+            match allocator.allocate_host_memory(size, alignment) {
+                Ok(ptr) => ptr,
+                Err(err) => {
+                    eprintln!("Failed to allocate host memory when allocating object because: {}", err);
+                    std::ptr::null_mut()
+                },
+            }
+        },
+        SystemAllocationScope::CACHE => {
+            match allocator.allocate_host_memory(size, alignment) {
+                Ok(ptr) => ptr,
+                Err(err) => {
+                    eprintln!("Failed to allocate host memory when allocating cache because: {}", err);
+                    std::ptr::null_mut()
+                },
+            }
+        },
+        SystemAllocationScope::DEVICE => {
+            match allocator.allocate_host_memory(size, alignment) {
+                Ok(ptr) => ptr,
+                Err(err) => {
+                    eprintln!("Failed to allocate host memory when allocating device because: {}", err);
+                    std::ptr::null_mut()
+                },
+            }
+        },
+        SystemAllocationScope::INSTANCE => {
+            match allocator.allocate_host_memory(size, alignment) {
+                Ok(ptr) => ptr,
+                Err(err) => {
+                    eprintln!("Failed to allocate host memory when allocating instance because: {}", err);
+                    std::ptr::null_mut()
+                },
+            }
+        },
+        _ => {
+            eprintln!("Failed to allocate host memory because the allocation scope was not supported!");
+            std::ptr::null_mut()
+        },
+    }
 }
