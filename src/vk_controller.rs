@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{vertex::Vertex, graphics_objects::UniformBufferObject, vk_allocator::VkAllocator};
+use crate::{vertex::Vertex, graphics_objects::UniformBufferObject, vk_allocator::{AllocationInfo, VkAllocator}};
 
 
 
@@ -44,12 +44,15 @@ pub struct VkController {
     in_flight_fences: Vec<vk::Fence>,
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
-    vertex_buffer: vk::Buffer,
-    vertex_buffer_memory: vk::DeviceMemory,
-    index_buffer: vk::Buffer,
-    index_buffer_memory: vk::DeviceMemory,
-    uniform_buffers: Vec<vk::Buffer>,
-    uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    // vertex_buffer: vk::Buffer,
+    // vertex_buffer_memory: vk::DeviceMemory,
+    vertex_allocation: Option<AllocationInfo>,
+    // index_buffer: vk::Buffer,
+    // index_buffer_memory: vk::DeviceMemory,
+    index_allocation: Option<AllocationInfo>,
+    // uniform_buffers: Vec<vk::Buffer>,
+    // uniform_buffers_memory: Vec<vk::DeviceMemory>,
+    uniform_allocations: Vec<AllocationInfo>,
     uniform_buffers_mapping: Vec<*mut std::ffi::c_void>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
@@ -58,16 +61,19 @@ pub struct VkController {
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
     mip_levels: u32,
-    texture_image: vk::Image,
-    texture_image_memory: vk::DeviceMemory,
-    texture_image_view: vk::ImageView,
+    // texture_image: vk::Image,
+    // texture_image_memory: vk::DeviceMemory,
+    // texture_image_view: vk::ImageView,
+    texture_image_allocation: Option<AllocationInfo>,
     texture_sampler: vk::Sampler,
-    color_image: vk::Image,
-    color_image_memory: vk::DeviceMemory,
-    color_image_view: vk::ImageView,
-    depth_image: vk::Image,
-    depth_image_memory: vk::DeviceMemory,
-    depth_image_view: vk::ImageView,
+    // color_image: vk::Image,
+    // color_image_memory: vk::DeviceMemory,
+    // color_image_view: vk::ImageView,
+    color_image_allocation: Option<AllocationInfo>,
+    // depth_image: vk::Image,
+    // depth_image_memory: vk::DeviceMemory,
+    // depth_image_view: vk::ImageView,
+    depth_image_allocation: Option<AllocationInfo>,
     msaa_samples: vk::SampleCountFlags,
     allocator: VkAllocator,
 }
@@ -145,29 +151,29 @@ impl VkController {
         
         let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
 
-        let (color_image, color_image_memory, color_image_view) = Self::create_color_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
+        let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
         
-        let (depth_image, depth_image_memory, depth_image_view) = Self::create_depth_resources(&instance, &physical_device, &device, &command_pool, &graphics_queue, &swapchain_extent, msaa_samples, &mut allocator );
+        let depth_image_allocation = Self::create_depth_resources(&instance, &physical_device, &swapchain_extent, msaa_samples, &mut allocator );
         
-        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_view, &color_image_view, &mut allocator );
+        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
         
-        let (texture_image, texture_image_memory, mip_levels) = Self::create_texture_image(&instance, &physical_device, &device, &command_pool, &graphics_queue, &mut allocator );
+        let (mut texture_image_allocation, mip_levels) = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
 
-        let texture_image_view = Self::create_texture_image_view(&device, &texture_image, mip_levels, &mut allocator );
+        Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
 
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
 
         let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
 
-        let (vertex_buffer, vertex_buffer_memory) = Self::create_vertex_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue, &vertices, &mut allocator );
+        let vertex_allocation = Self::create_vertex_buffer(&command_pool, &graphics_queue, &vertices, &mut allocator );
 
-        let (index_buffer, index_buffer_memory) = Self::create_index_buffer(&instance, &physical_device, &device, &command_pool, &graphics_queue, &indices, &mut allocator );
+        let index_allocation = Self::create_index_buffer(&command_pool, &graphics_queue, &indices, &mut allocator );
 
-        let (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapping) = Self::create_uniform_buffers(&instance, &physical_device, &device, &mut allocator );
+        let (uniform_allocations, uniform_buffers_mapping) = Self::create_uniform_buffers(&device, &mut allocator );
         
         let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
         
-        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_buffers, &descriptor_set_layout, &texture_image_view, &texture_sampler);
+        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_allocations, &descriptor_set_layout, &texture_image_allocation, &texture_sampler);
         
         let command_buffers = Self::create_command_buffers(&device, &command_pool);
         
@@ -199,12 +205,15 @@ impl VkController {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-            vertex_buffer,
-            vertex_buffer_memory,
-            index_buffer,
-            index_buffer_memory,
-            uniform_buffers,
-            uniform_buffers_memory,
+            // vertex_buffer,
+            // vertex_buffer_memory,
+            vertex_allocation: Some(vertex_allocation),
+            // index_buffer,
+            // index_buffer_memory,
+            index_allocation: Some(index_allocation),
+            // uniform_buffers,
+            // uniform_buffers_memory,
+            uniform_allocations,
             uniform_buffers_mapping,
             current_frame: 0,
             frame_buffer_resized: false,
@@ -212,16 +221,19 @@ impl VkController {
             start_time: Instant::now(),
             descriptor_pool,
             descriptor_sets,
-            texture_image,
-            texture_image_memory,
-            texture_image_view,
+            // texture_image,
+            // texture_image_memory,
+            // texture_image_view,
+            texture_image_allocation: Some(texture_image_allocation),
             texture_sampler,
-            color_image,
-            color_image_memory,
-            color_image_view,
-            depth_image,
-            depth_image_memory,
-            depth_image_view,
+            // color_image,
+            // color_image_memory,
+            // color_image_view,
+            color_image_allocation: Some(color_image_allocation),
+            // depth_image,
+            // depth_image_memory,
+            // depth_image_view,
+            depth_image_allocation: Some(depth_image_allocation),
             vertices,
             indices,
             mip_levels,
@@ -504,15 +516,19 @@ impl VkController {
             self.cleanup_swapchain();
 
             self.device.destroy_sampler(self.texture_sampler, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_image_view(self.texture_image_view, Some(&self.allocator.get_allocation_callbacks()));
+            self.allocator.free_memory_allocation(self.texture_image_allocation.unwrap()).unwrap();
+            self.texture_image_allocation = None;
+            //self.device.destroy_image_view(self.texture_image_view, Some(&self.allocator.get_allocation_callbacks()));
 
-            self.device.destroy_image(self.texture_image, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.free_memory(self.texture_image_memory, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_image(self.texture_image, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.free_memory(self.texture_image_memory, Some(&self.allocator.get_allocation_callbacks()));
 
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-                self.device.destroy_buffer(self.uniform_buffers[i], Some(&self.allocator.get_allocation_callbacks()));
-                self.device.free_memory(self.uniform_buffers_memory[i], Some(&self.allocator.get_allocation_callbacks()));
+                //self.device.destroy_buffer(self.uniform_buffers[i], Some(&self.allocator.get_allocation_callbacks()));
+                self.allocator.free_memory_allocation(self.uniform_allocations[i]).unwrap();
+                //self.device.free_memory(self.uniform_buffers_memory[i], Some(&self.allocator.get_allocation_callbacks()));
             }
+            self.uniform_allocations.clear();
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
@@ -522,11 +538,15 @@ impl VkController {
             self.device.destroy_pipeline_layout(self.pipeline_layout, Some(&self.allocator.get_allocation_callbacks()));
             self.device.destroy_render_pass(self.render_pass, Some(&self.allocator.get_allocation_callbacks()));
             
-            self.device.destroy_buffer(self.index_buffer, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.free_memory(self.index_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_buffer(self.index_buffer, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.free_memory(self.index_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
+            self.allocator.free_memory_allocation(self.index_allocation.unwrap()).unwrap();
+            self.index_allocation = None;
 
-            self.device.destroy_buffer(self.vertex_buffer, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.free_memory(self.vertex_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_buffer(self.vertex_buffer, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.free_memory(self.vertex_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
+            self.allocator.free_memory_allocation(self.vertex_allocation.unwrap()).unwrap();
+            self.vertex_allocation = None;
 
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
                 self.device.destroy_semaphore(self.render_finished_semaphores[i], Some(&self.allocator.get_allocation_callbacks()));
@@ -654,7 +674,7 @@ impl VkController {
         }
 
         unsafe {
-            swapchain_loader.create_swapchain(&swapchain_create_info, Some(&mut allocator.get_allocation_callbacks()))
+            swapchain_loader.create_swapchain(&swapchain_create_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
     }
 
@@ -685,19 +705,24 @@ impl VkController {
         self.swapchain_image_views = Self::create_image_views(&self.device, &self.swapchain_images, self.swapchain_image_format, &mut self.allocator);
         let swapchain_capabilities = Self::query_swapchain_support(&self.entry, &self.instance, &self.physical_device, &self.surface);
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
-        (self.color_image, self.color_image_memory, self.color_image_view) = Self::create_color_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples, &mut self.allocator);
-        (self.depth_image, self.depth_image_memory, self.depth_image_view) = Self::create_depth_resources(&self.instance, &self.physical_device, &self.device, &self.command_pool, &self.graphics_queue, &self.swapchain_extent, self.msaa_samples, &mut self.allocator);
-        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_view, &self.color_image_view, &mut self.allocator);
+        self.color_image_allocation = Some(Self::create_color_resources(self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
+        self.depth_image_allocation = Some(Self::create_depth_resources(&self.instance, &self.physical_device, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_allocation.unwrap(), &self.color_image_allocation.unwrap(), &mut self.allocator);
     }
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
-            self.device.destroy_image_view(self.color_image_view, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_image(self.color_image, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.free_memory(self.color_image_memory, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_image_view(self.depth_image_view, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_image(self.depth_image, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.free_memory(self.depth_image_memory, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_image_view(self.color_image_view, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_image(self.color_image, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.free_memory(self.color_image_memory, Some(&self.allocator.get_allocation_callbacks()));
+            self.allocator.free_memory_allocation(self.color_image_allocation.unwrap()).unwrap();
+            self.color_image_allocation = None;
+            // self.device.destroy_image_view(self.depth_image_view, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_image(self.depth_image, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.free_memory(self.depth_image_memory, Some(&self.allocator.get_allocation_callbacks()));
+            self.allocator.free_memory_allocation(self.depth_image_allocation.unwrap()).unwrap();
+            self.depth_image_allocation = None;
+            
             self.swapchain_framebuffers.iter().for_each(|framebuffer| {
                 self.device.destroy_framebuffer(*framebuffer, Some(&self.allocator.get_allocation_callbacks()));
             });
@@ -712,7 +737,25 @@ impl VkController {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
         for i in 0..swapchain_images.len() {
-            swapchain_image_views.push(Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, 1, allocator));
+            let view_info = vk::ImageViewCreateInfo {
+                s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
+                image: swapchain_images[i],
+                view_type: vk::ImageViewType::TYPE_2D,
+                format: swapchain_image_format,
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
+    
+            let image_view = unsafe {
+                device.create_image_view(&view_info, Some(&allocator.get_allocation_callbacks()))
+            }.unwrap();
+            swapchain_image_views.push(image_view);//Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, 1, allocator));
         }
 
         swapchain_image_views
@@ -868,13 +911,13 @@ impl VkController {
         };
 
         let graphics_pipeline = unsafe {
-            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], Some(&mut allocator.get_allocation_callbacks()))
+            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], Some(&allocator.get_allocation_callbacks()))
         }.unwrap()[0];
 
         // This should always happen at the end
         unsafe {
-            device.destroy_shader_module(vert_shader_module, Some(&mut allocator.get_allocation_callbacks()));
-            device.destroy_shader_module(frag_shader_module, Some(&mut allocator.get_allocation_callbacks()));
+            device.destroy_shader_module(vert_shader_module, Some(&allocator.get_allocation_callbacks()));
+            device.destroy_shader_module(frag_shader_module, Some(&allocator.get_allocation_callbacks()));
         }
 
         graphics_pipeline
@@ -895,7 +938,7 @@ impl VkController {
         };
 
         unsafe {
-            device.create_shader_module(&create_info, Some(&mut allocator.get_allocation_callbacks()))
+            device.create_shader_module(&create_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
     }
 
@@ -911,7 +954,7 @@ impl VkController {
         };
 
         unsafe {
-            device.create_pipeline_layout(&pipeline_layout_create_info, Some(&mut allocator.get_allocation_callbacks()))
+            device.create_pipeline_layout(&pipeline_layout_create_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
     }
 
@@ -999,7 +1042,7 @@ impl VkController {
         };
 
         unsafe {
-            device.create_render_pass(&render_pass_info, Some(&mut allocator.get_allocation_callbacks()))
+            device.create_render_pass(&render_pass_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
     }
 
@@ -1024,11 +1067,11 @@ impl VkController {
         }
     }
 
-    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_views: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &vk::ImageView, color_image_view: &vk::ImageView, allocator: &mut VkAllocator) -> Vec<vk::Framebuffer> {
-        let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_views.len());
+    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_allocations: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &AllocationInfo, color_image_view: &AllocationInfo, allocator: &mut VkAllocator) -> Vec<vk::Framebuffer> {
+        let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_allocations.len());
 
-        for swapchain_image_view in swapchain_image_views.iter() {
-            let attachments = [*color_image_view, *depth_image_view, *swapchain_image_view];
+        for swapchain_image_view in swapchain_image_allocations.iter() {
+            let attachments = [color_image_view.get_image_view().unwrap(), depth_image_view.get_image_view().unwrap(), *swapchain_image_view];
 
             let framebuffer_create_info = vk::FramebufferCreateInfo {
                 s_type: StructureType::FRAMEBUFFER_CREATE_INFO,
@@ -1042,7 +1085,7 @@ impl VkController {
             };
 
             swapchain_framebuffers.push(unsafe {
-                device.create_framebuffer(&framebuffer_create_info, Some(&mut allocator.get_allocation_callbacks()))
+                device.create_framebuffer(&framebuffer_create_info, Some(&allocator.get_allocation_callbacks()))
             }.unwrap());
         }
 
@@ -1059,7 +1102,7 @@ impl VkController {
         };
 
         unsafe {
-            device.create_command_pool(&pool_info, Some(&mut allocator.get_allocation_callbacks()))
+            device.create_command_pool(&pool_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
     }
 
@@ -1078,7 +1121,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_buffer: &vk::Buffer, index_buffer: &vk::Buffer, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &Vec<vk::DescriptorSet>, current_frame: usize, indices: &[u32]) {
+    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &Vec<vk::DescriptorSet>, current_frame: usize, indices: &[u32]) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -1122,7 +1165,7 @@ impl VkController {
         let viewport = Self::get_viewport(swapchain_extent);
         let scissor = Self::get_scissor(swapchain_extent);
 
-        let vertex_buffers = [*vertex_buffer];
+        let vertex_buffers = [vertex_allocation.get_buffer().unwrap()];
         let offsets = [0_u64];
 
         unsafe {
@@ -1131,7 +1174,7 @@ impl VkController {
             device.cmd_set_viewport(*command_buffer, 0, &[viewport]);
             device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
-            device.cmd_bind_index_buffer(*command_buffer, *index_buffer, 0, vk::IndexType::UINT32);
+            device.cmd_bind_index_buffer(*command_buffer, index_allocation.get_buffer().unwrap(), 0, vk::IndexType::UINT32);
             device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline_layout, 0, &vec![descriptor_sets[current_frame]], &vec![]);
             device.cmd_draw_indexed(*command_buffer, indices.len() as u32, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
@@ -1171,7 +1214,7 @@ impl VkController {
             self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
         }
 
-        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_buffer, &self.index_buffer, &self.pipeline_layout, &self.descriptor_sets, self.current_frame, &self.indices);
+        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_allocation.unwrap(), &self.index_allocation.unwrap(), &self.pipeline_layout, &self.descriptor_sets, self.current_frame, &self.indices);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -1248,15 +1291,15 @@ impl VkController {
         for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
 
             image_available_semaphores.push(unsafe {
-                device.create_semaphore(&semaphore_create_info, Some(&mut allocator.get_allocation_callbacks()))
+                device.create_semaphore(&semaphore_create_info, Some(&allocator.get_allocation_callbacks()))
             }.unwrap());
 
             render_finished_semaphores.push(unsafe {
-                device.create_semaphore(&semaphore_create_info, Some(&mut allocator.get_allocation_callbacks()))
+                device.create_semaphore(&semaphore_create_info, Some(&allocator.get_allocation_callbacks()))
             }.unwrap());
 
             in_flight_fences.push(unsafe {
-                device.create_fence(&fence_create_info, Some(&mut allocator.get_allocation_callbacks()))
+                device.create_fence(&fence_create_info, Some(&allocator.get_allocation_callbacks()))
             }.unwrap());
         }
 
@@ -1358,110 +1401,113 @@ impl VkController {
 
 // Resource management
 impl VkController {
-    fn create_vertex_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex], allocator: &mut VkAllocator) -> (vk::Buffer, vk::DeviceMemory) {
-        let size = std::mem::size_of_val(vertices);
+    fn create_vertex_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex], allocator: &mut VkAllocator) -> AllocationInfo {
+        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&vertices).unwrap(), vk::BufferUsageFlags::VERTEX_BUFFER).unwrap()
         
-        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        // let size = std::mem::size_of_val(vertices);
         
-        unsafe {
-            let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
-            let vertices_ptr = vertices.as_ptr() as *const u8;
-            std::ptr::copy_nonoverlapping(vertices_ptr, data_ptr, size);
-            device.unmap_memory(staging_buffer_memory);
-        }
+        // let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
         
-        let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
+        // unsafe {
+        //     let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+        //     let vertices_ptr = vertices.as_ptr() as *const u8;
+        //     std::ptr::copy_nonoverlapping(vertices_ptr, data_ptr, size);
+        //     device.unmap_memory(staging_buffer_memory);
+        // }
+        
+        // let (vertex_buffer, vertex_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
 
-        Self::copy_buffer(&staging_buffer, &vertex_buffer, size as u64, device, command_pool, graphics_queue);
+        // Self::copy_buffer(&staging_buffer, &vertex_buffer, size as u64, device, command_pool, graphics_queue);
 
-        unsafe {
-            device.destroy_buffer(staging_buffer, Some(&mut allocator.get_allocation_callbacks()));
-            device.free_memory(staging_buffer_memory, Some(&mut allocator.get_allocation_callbacks()));
-        }
+        // unsafe {
+        //     device.destroy_buffer(staging_buffer, Some(&allocator.get_allocation_callbacks()));
+        //     device.free_memory(staging_buffer_memory, Some(&allocator.get_allocation_callbacks()));
+        // }
 
-        (vertex_buffer, vertex_buffer_memory)
+        // (vertex_buffer, vertex_buffer_memory)
     }
 
-    fn create_index_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, indices: &[u32], allocator: &mut VkAllocator) -> (vk::Buffer, vk::DeviceMemory) {
-        let size = std::mem::size_of_val(indices);
+    fn create_index_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, indices: &[u32], allocator: &mut VkAllocator) -> AllocationInfo {
+        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&indices).unwrap(), vk::BufferUsageFlags::INDEX_BUFFER).unwrap()
+        // let size = std::mem::size_of_val(indices);
         
-        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        // let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
         
-        unsafe {
-            let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
-            let indices_ptr = indices.as_ptr() as *const u8;
-            std::ptr::copy_nonoverlapping(indices_ptr, data_ptr, size);
-            device.unmap_memory(staging_buffer_memory);
-        }
+        // unsafe {
+        //     let data_ptr = device.map_memory(staging_buffer_memory, 0, size as u64, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+        //     let indices_ptr = indices.as_ptr() as *const u8;
+        //     std::ptr::copy_nonoverlapping(indices_ptr, data_ptr, size);
+        //     device.unmap_memory(staging_buffer_memory);
+        // }
         
-        let (index_buffer, index_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
+        // let (index_buffer, index_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::INDEX_BUFFER | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
 
-        Self::copy_buffer(&staging_buffer, &index_buffer, size as u64, device, command_pool, graphics_queue);
+        // Self::copy_buffer(&staging_buffer, &index_buffer, size as u64, device, command_pool, graphics_queue);
 
-        unsafe {
-            device.destroy_buffer(staging_buffer, Some(&mut allocator.get_allocation_callbacks()));
-            device.free_memory(staging_buffer_memory, Some(&mut allocator.get_allocation_callbacks()));
-        }
+        // unsafe {
+        //     device.destroy_buffer(staging_buffer, Some(&allocator.get_allocation_callbacks()));
+        //     device.free_memory(staging_buffer_memory, Some(&allocator.get_allocation_callbacks()));
+        // }
 
-        (index_buffer, index_buffer_memory)
+        // (index_buffer, index_buffer_memory)
     }
 
-    fn create_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags, allocator: &mut VkAllocator) -> (vk::Buffer, vk::DeviceMemory) {
-        let buffer_info = vk::BufferCreateInfo {
-            s_type: StructureType::BUFFER_CREATE_INFO,
-            size,
-            usage,
-            sharing_mode: vk::SharingMode::EXCLUSIVE,
-            ..Default::default()
-        };
+    // fn create_buffer(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags, allocator: &mut VkAllocator) -> (vk::Buffer, vk::DeviceMemory) {
+    //     let buffer_info = vk::BufferCreateInfo {
+    //         s_type: StructureType::BUFFER_CREATE_INFO,
+    //         size,
+    //         usage,
+    //         sharing_mode: vk::SharingMode::EXCLUSIVE,
+    //         ..Default::default()
+    //     };
 
-        let buffer = unsafe {
-            device.create_buffer(&buffer_info, Some(&mut allocator.get_allocation_callbacks()))
-        }.unwrap();
+    //     let buffer = unsafe {
+    //         device.create_buffer(&buffer_info, Some(&allocator.get_allocation_callbacks()))
+    //     }.unwrap();
         
-        let memory_requirements = unsafe {
-            device.get_buffer_memory_requirements(buffer)
-        };
+    //     let memory_requirements = unsafe {
+    //         device.get_buffer_memory_requirements(buffer)
+    //     };
 
-        let alloc_info = vk::MemoryAllocateInfo {
-            s_type: StructureType::MEMORY_ALLOCATE_INFO,
-            allocation_size: memory_requirements.size,
-            memory_type_index: Self::find_memory_type(instance, physical_device, memory_requirements.memory_type_bits, properties).unwrap(),
-            ..Default::default()
-        };
+    //     let alloc_info = vk::MemoryAllocateInfo {
+    //         s_type: StructureType::MEMORY_ALLOCATE_INFO,
+    //         allocation_size: memory_requirements.size,
+    //         memory_type_index: Self::find_memory_type(instance, physical_device, memory_requirements.memory_type_bits, properties).unwrap(),
+    //         ..Default::default()
+    //     };
 
-        println!("Should not allocate memory for many different buffers, but rather have one big buffer and an allocator that uses offsets when binding buffer to memory!");
-        let buffer_memory = unsafe {
-            device.allocate_memory(&alloc_info, Some(&mut allocator.get_allocation_callbacks()))
-        }.unwrap();
+    //     println!("Should not allocate memory for many different buffers, but rather have one big buffer and an allocator that uses offsets when binding buffer to memory!");
+    //     let buffer_memory = unsafe {
+    //         device.allocate_memory(&alloc_info, Some(&allocator.get_allocation_callbacks()))
+    //     }.unwrap();
 
-        unsafe {
-            device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap();
-        }
+    //     unsafe {
+    //         device.bind_buffer_memory(buffer, buffer_memory, 0).unwrap();
+    //     }
 
-        (buffer, buffer_memory)
-    }
+    //     (buffer, buffer_memory)
+    // }
 
 
-    fn create_uniform_buffers(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, allocator: &mut VkAllocator) -> (Vec<vk::Buffer>, Vec<vk::DeviceMemory>, Vec<*mut std::ffi::c_void>) {
+    fn create_uniform_buffers(device: &Device, allocator: &mut VkAllocator) -> (Vec<AllocationInfo>, Vec<*mut std::ffi::c_void>) {
         let buffer_size = std::mem::size_of::<UniformBufferObject>();
 
         let mut uniform_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
-        let mut uniform_buffers_memory = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        // let mut uniform_buffers_memory = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         let mut uniform_buffers_mapped = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         
         for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            let (uniform_buffer, uniform_buffer_memory) = Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
-            uniform_buffers.push(uniform_buffer);
-            uniform_buffers_memory.push(uniform_buffer_memory);
+            let allocation_info = allocator.create_buffer(buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT).unwrap(); //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+            uniform_buffers.push(allocation_info);//uniform_buffer);
+            // uniform_buffers_memory.push(uniform_buffer_memory);
 
             let data_ptr = unsafe {
-                device.map_memory(uniform_buffer_memory, 0, buffer_size as u64, vk::MemoryMapFlags::empty()).unwrap()
+                device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), buffer_size as u64, vk::MemoryMapFlags::empty()).unwrap()
             };
             uniform_buffers_mapped.push(data_ptr);
         }
 
-        (uniform_buffers, uniform_buffers_memory, uniform_buffers_mapped)
+        (uniform_buffers, uniform_buffers_mapped)
     }
 
     fn update_uniform_buffer(&mut self, current_image: usize) {
@@ -1505,7 +1551,7 @@ impl VkController {
         };
 
         unsafe {
-            device.create_descriptor_set_layout(&layout_info, Some(&mut allocator.get_allocation_callbacks()))
+            device.create_descriptor_set_layout(&layout_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
     }
 
@@ -1530,12 +1576,12 @@ impl VkController {
         };
 
         unsafe {
-            device.create_descriptor_pool(&pool_info, Some(&mut allocator.get_allocation_callbacks()))
+            device.create_descriptor_pool(&pool_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
     }
 
-    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, uniform_buffers: &Vec<vk::Buffer>, descriptor_set_layout: &vk::DescriptorSetLayout, texture_image_view: &vk::ImageView, texture_sampler: &vk::Sampler) -> Vec<vk::DescriptorSet> {
-        let layouts = vec![*descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
+    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, uniform_buffers: &[AllocationInfo], descriptor_set_layout: &vk::DescriptorSetLayout, texture_allocation: &AllocationInfo, texture_sampler: &vk::Sampler) -> Vec<vk::DescriptorSet> {
+        let layouts = [*descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
         let alloc_info = vk::DescriptorSetAllocateInfo {
             s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
             descriptor_pool: *descriptor_pool,
@@ -1550,15 +1596,14 @@ impl VkController {
 
         for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
             let buffer_info = vk::DescriptorBufferInfo {
-                buffer: uniform_buffers[i],
+                buffer: uniform_buffers[i].get_buffer().unwrap(),
                 offset: 0,
                 range: std::mem::size_of::<UniformBufferObject>() as u64,
-                ..Default::default()
             };
 
             let image_info = vk::DescriptorImageInfo {
                 sampler: *texture_sampler,
-                image_view: *texture_image_view,
+                image_view: texture_allocation.get_image_view().unwrap(),
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             };
 
@@ -1596,275 +1641,275 @@ impl VkController {
         descriptor_sets
     }
 
-    fn create_texture_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, allocator: &mut VkAllocator) -> (vk::Image, vk::DeviceMemory, u32) {
+    fn create_texture_image(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, allocator: &mut VkAllocator) -> (AllocationInfo, u32) {
         let binding = image::open("./assets/images/viking_room.png").unwrap();
-        let image = binding.to_rgba8();
-        let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
-        
-        let mip_levels = ((image.dimensions().0 as f32).max(image.dimensions().1 as f32).log2().floor() + 1.0) as u32;
 
-        let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
-
-        unsafe {
-            let data_ptr = device.map_memory(staging_buffer_memory, 0, image_size, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
-            std::ptr::copy_nonoverlapping(image.as_ptr(), data_ptr, image_size as usize);
-            device.unmap_memory(staging_buffer_memory);
-        };
-
-        let (vk_image, device_memory) = Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, mip_levels, vk::SampleCountFlags::TYPE_1, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
-
-        Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip_levels);
-        Self::copy_buffer_to_image(&staging_buffer, &vk_image, image.dimensions().0, image.dimensions().1, device, command_pool, graphics_queue);
-        //Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, mip_levels);
+        allocator.create_device_local_image(binding, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1).unwrap()
+        // let image = binding.to_rgba8();
+        // let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
         
-        unsafe {
-            device.destroy_buffer(staging_buffer, Some(&mut allocator.get_allocation_callbacks()));
-            device.free_memory(staging_buffer_memory, Some(&mut allocator.get_allocation_callbacks()));
-        }
+        // let mip_levels = ((image.dimensions().0 as f32).max(image.dimensions().1 as f32).log2().floor() + 1.0) as u32;
+
+        // let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+
+        // unsafe {
+        //     let data_ptr = device.map_memory(staging_buffer_memory, 0, image_size, vk::MemoryMapFlags::empty()).unwrap() as *mut u8;
+        //     std::ptr::copy_nonoverlapping(image.as_ptr(), data_ptr, image_size as usize);
+        //     device.unmap_memory(staging_buffer_memory);
+        // };
+
+        // let (vk_image, device_memory) = Self::create_image(instance, physical_device, device, image.dimensions().0, image.dimensions().1, mip_levels, vk::SampleCountFlags::TYPE_1, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
+
+        // Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip_levels);
+        // Self::copy_buffer_to_image(&staging_buffer, &vk_image, image.dimensions().0, image.dimensions().1, device, command_pool, graphics_queue);
+        // //Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, mip_levels);
         
-        Self::generate_mipmaps(instance, physical_device, device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels);
+        // unsafe {
+        //     device.destroy_buffer(staging_buffer, Some(&allocator.get_allocation_callbacks()));
+        //     device.free_memory(staging_buffer_memory, Some(&allocator.get_allocation_callbacks()));
+        // }
         
-        (vk_image, device_memory, mip_levels)
+        // Self::generate_mipmaps(instance, physical_device, device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels);
+        
+        // (vk_image, device_memory, mip_levels)
     }
 
-    fn generate_mipmaps(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, image_format: vk::Format, width: u32, height: u32, mip_levels: u32) {
-        let format_properties = unsafe {
-            instance.get_physical_device_format_properties(*physical_device, image_format)
-        };
+    // fn generate_mipmaps(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, image_format: vk::Format, width: u32, height: u32, mip_levels: u32) {
+    //     let format_properties = unsafe {
+    //         instance.get_physical_device_format_properties(*physical_device, image_format)
+    //     };
 
-        if !format_properties.optimal_tiling_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR) {
-            panic!("Texture image format does not support linear blitting!");
-        }
+    //     if !format_properties.optimal_tiling_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR) {
+    //         panic!("Texture image format does not support linear blitting!");
+    //     }
 
-        let command_buffer = Self::begin_single_time_command(device, command_pool);
+    //     let command_buffer = Self::begin_single_time_command(device, command_pool);
         
-        let mut image_barrier = vk::ImageMemoryBarrier {
-            s_type: StructureType::IMAGE_MEMORY_BARRIER,
-            image: *image,
-            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_array_layer: 0,
-                layer_count: 1,
-                level_count: 1,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+    //     let mut image_barrier = vk::ImageMemoryBarrier {
+    //         s_type: StructureType::IMAGE_MEMORY_BARRIER,
+    //         image: *image,
+    //         src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+    //         dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+    //         subresource_range: vk::ImageSubresourceRange {
+    //             aspect_mask: vk::ImageAspectFlags::COLOR,
+    //             base_array_layer: 0,
+    //             layer_count: 1,
+    //             level_count: 1,
+    //             ..Default::default()
+    //         },
+    //         ..Default::default()
+    //     };
 
-        let mut mip_width = width as i32;
-        let mut mip_height = height as i32;
+    //     let mut mip_width = width as i32;
+    //     let mut mip_height = height as i32;
 
-        for i in 1..mip_levels {
-            image_barrier.subresource_range.base_mip_level = i - 1;
-            image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-            image_barrier.new_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
-            image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-            image_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
+    //     for i in 1..mip_levels {
+    //         image_barrier.subresource_range.base_mip_level = i - 1;
+    //         image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+    //         image_barrier.new_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+    //         image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+    //         image_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
 
-            unsafe {
-                device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[image_barrier]);
-            }
+    //         unsafe {
+    //             device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[image_barrier]);
+    //         }
 
-            let blit = vk::ImageBlit {
-                src_offsets: [
-                    vk::Offset3D {
-                        x: 0,
-                        y: 0,
-                        z: 0,
-                    },
-                    vk::Offset3D {
-                        x: mip_width,
-                        y: mip_height,
-                        z: 1,
-                    },
-                ],
-                src_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: i - 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                dst_offsets: [
-                    vk::Offset3D {
-                        x: 0,
-                        y: 0,
-                        z: 0,
-                    },
-                    vk::Offset3D {
-                        x: if mip_width > 1 { mip_width / 2 } else { 1 },
-                        y: if mip_height > 1 { mip_height / 2 } else { 1 },
-                        z: 1,
-                    },
-                ],
-                dst_subresource: vk::ImageSubresourceLayers {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    mip_level: i,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-            };
+    //         let blit = vk::ImageBlit {
+    //             src_offsets: [
+    //                 vk::Offset3D {
+    //                     x: 0,
+    //                     y: 0,
+    //                     z: 0,
+    //                 },
+    //                 vk::Offset3D {
+    //                     x: mip_width,
+    //                     y: mip_height,
+    //                     z: 1,
+    //                 },
+    //             ],
+    //             src_subresource: vk::ImageSubresourceLayers {
+    //                 aspect_mask: vk::ImageAspectFlags::COLOR,
+    //                 mip_level: i - 1,
+    //                 base_array_layer: 0,
+    //                 layer_count: 1,
+    //             },
+    //             dst_offsets: [
+    //                 vk::Offset3D {
+    //                     x: 0,
+    //                     y: 0,
+    //                     z: 0,
+    //                 },
+    //                 vk::Offset3D {
+    //                     x: if mip_width > 1 { mip_width / 2 } else { 1 },
+    //                     y: if mip_height > 1 { mip_height / 2 } else { 1 },
+    //                     z: 1,
+    //                 },
+    //             ],
+    //             dst_subresource: vk::ImageSubresourceLayers {
+    //                 aspect_mask: vk::ImageAspectFlags::COLOR,
+    //                 mip_level: i,
+    //                 base_array_layer: 0,
+    //                 layer_count: 1,
+    //             },
+    //         };
 
-            unsafe {
-                device.cmd_blit_image(command_buffer, *image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, *image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::LINEAR);
-            }
+    //         unsafe {
+    //             device.cmd_blit_image(command_buffer, *image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, *image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::LINEAR);
+    //         }
 
-            image_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
-            image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-            image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
-            image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+    //         image_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+    //         image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+    //         image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+    //         image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
 
-            unsafe {
-                device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, DependencyFlags::empty(), &[], &[], &[image_barrier]);
-            }
+    //         unsafe {
+    //             device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, DependencyFlags::empty(), &[], &[], &[image_barrier]);
+    //         }
 
-            if mip_width > 1 {
-                mip_width /= 2;
-            }
-            if mip_height > 1 {
-                mip_height /= 2;
-            }
-        }
+    //         if mip_width > 1 {
+    //             mip_width /= 2;
+    //         }
+    //         if mip_height > 1 {
+    //             mip_height /= 2;
+    //         }
+    //     }
 
-        image_barrier.subresource_range.base_mip_level = mip_levels - 1;
-        image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
-        image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-        image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-        image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+    //     image_barrier.subresource_range.base_mip_level = mip_levels - 1;
+    //     image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+    //     image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+    //     image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+    //     image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
 
-        unsafe {
-            device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, DependencyFlags::empty(), &[], &[], &[image_barrier]);
-        } 
+    //     unsafe {
+    //         device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, DependencyFlags::empty(), &[], &[], &[image_barrier]);
+    //     } 
 
-        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
-    }
+    //     Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
+    // }
 
-    fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, mip_levels: u32, num_samples: vk::SampleCountFlags, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags, allocator: &mut VkAllocator) -> (vk::Image, vk::DeviceMemory) {
-        let image_info = vk::ImageCreateInfo {
-            s_type: StructureType::IMAGE_CREATE_INFO,
-            image_type: vk::ImageType::TYPE_2D,
-            extent: vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            },
-            mip_levels,
-            array_layers: 1,
-            format,
-            tiling,
-            initial_layout: vk::ImageLayout::UNDEFINED,
-            usage,
-            sharing_mode: vk::SharingMode::EXCLUSIVE,
-            samples: num_samples,
-            flags: vk::ImageCreateFlags::empty(),
-            ..Default::default()
-        };
+    // fn create_image(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, width: u32, height: u32, mip_levels: u32, num_samples: vk::SampleCountFlags, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags, allocator: &mut VkAllocator) -> (vk::Image, vk::DeviceMemory) {
+    //     let image_info = vk::ImageCreateInfo {
+    //         s_type: StructureType::IMAGE_CREATE_INFO,
+    //         image_type: vk::ImageType::TYPE_2D,
+    //         extent: vk::Extent3D {
+    //             width,
+    //             height,
+    //             depth: 1,
+    //         },
+    //         mip_levels,
+    //         array_layers: 1,
+    //         format,
+    //         tiling,
+    //         initial_layout: vk::ImageLayout::UNDEFINED,
+    //         usage,
+    //         sharing_mode: vk::SharingMode::EXCLUSIVE,
+    //         samples: num_samples,
+    //         flags: vk::ImageCreateFlags::empty(),
+    //         ..Default::default()
+    //     };
 
-        let image = unsafe {
-            device.create_image(&image_info, Some(&mut allocator.get_allocation_callbacks()))
-        }.unwrap();
+    //     let image = unsafe {
+    //         device.create_image(&image_info, Some(&allocator.get_allocation_callbacks()))
+    //     }.unwrap();
 
-        let mem_requirements = unsafe {
-            device.get_image_memory_requirements(image)
-        };
+    //     let mem_requirements = unsafe {
+    //         device.get_image_memory_requirements(image)
+    //     };
 
-        let alloc_info = vk::MemoryAllocateInfo {
-            s_type: StructureType::MEMORY_ALLOCATE_INFO,
-            allocation_size: mem_requirements.size,
-            memory_type_index: Self::find_memory_type(instance, physical_device, mem_requirements.memory_type_bits, properties).unwrap(),
-            ..Default::default()
-        };
+    //     let alloc_info = vk::MemoryAllocateInfo {
+    //         s_type: StructureType::MEMORY_ALLOCATE_INFO,
+    //         allocation_size: mem_requirements.size,
+    //         memory_type_index: Self::find_memory_type(instance, physical_device, mem_requirements.memory_type_bits, properties).unwrap(),
+    //         ..Default::default()
+    //     };
 
-        let image_memory = unsafe {
-            device.allocate_memory(&alloc_info, Some(&mut allocator.get_allocation_callbacks()))
-        }.unwrap();
+    //     let image_memory = unsafe {
+    //         device.allocate_memory(&alloc_info, Some(&allocator.get_allocation_callbacks()))
+    //     }.unwrap();
 
-        unsafe {
-            device.bind_image_memory(image, image_memory, 0).unwrap();
-        }
+    //     unsafe {
+    //         device.bind_image_memory(image, image_memory, 0).unwrap();
+    //     }
 
-        (image, image_memory)
-    }
+    //     (image, image_memory)
+    // }
 
-    fn transition_image_layout(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, mip_levels: u32) {
-        let command_buffer = Self::begin_single_time_command(device, command_pool);
+    // fn transition_image_layout(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, mip_levels: u32) {
+    //     let command_buffer = Self::begin_single_time_command(device, command_pool);
 
-        let mut barrier = vk::ImageMemoryBarrier {
-            s_type: StructureType::IMAGE_MEMORY_BARRIER,
-            old_layout,
-            new_layout,
-            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-            image: *image,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: mip_levels,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-            // src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
-            //     vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
-            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            //     _ => panic!("Unsupported layout transition!"),
-            // },
-            // dst_access_mask: match new_layout {
-            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
-            //     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            //     _ => panic!("Unsupported layout transition!"),
-            // },
-            ..Default::default()
-        };
+    //     let mut barrier = vk::ImageMemoryBarrier {
+    //         s_type: StructureType::IMAGE_MEMORY_BARRIER,
+    //         old_layout,
+    //         new_layout,
+    //         src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+    //         dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+    //         image: *image,
+    //         subresource_range: vk::ImageSubresourceRange {
+    //             aspect_mask: vk::ImageAspectFlags::COLOR,
+    //             base_mip_level: 0,
+    //             level_count: mip_levels,
+    //             base_array_layer: 0,
+    //             layer_count: 1,
+    //         },
+    //         // src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
+    //         //     vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
+    //         //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+    //         //     _ => panic!("Unsupported layout transition!"),
+    //         // },
+    //         // dst_access_mask: match new_layout {
+    //         //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+    //         //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
+    //         //     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+    //         //     _ => panic!("Unsupported layout transition!"),
+    //         // },
+    //         ..Default::default()
+    //     };
 
-        let (source_stage, destination_stage) = match (old_layout, new_layout) {
-            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => {
-                barrier.src_access_mask = vk::AccessFlags::empty();
-                barrier.dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-                (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER)
-            },
-            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
-                barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
-                barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
-                (vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER)
-            },
-            //(vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS),
-            _ => panic!("Unsupported layout transition! {} {}", old_layout.as_raw(), new_layout.as_raw()),
-        };
+    //     let (source_stage, destination_stage) = match (old_layout, new_layout) {
+    //         (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => {
+    //             barrier.src_access_mask = vk::AccessFlags::empty();
+    //             barrier.dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+    //             (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER)
+    //         },
+    //         (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
+    //             barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+    //             barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+    //             (vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER)
+    //         },
+    //         //(vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS),
+    //         _ => panic!("Unsupported layout transition! {} {}", old_layout.as_raw(), new_layout.as_raw()),
+    //     };
 
-        unsafe {
-            device.cmd_pipeline_barrier(command_buffer, source_stage, destination_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
-        }
+    //     unsafe {
+    //         device.cmd_pipeline_barrier(command_buffer, source_stage, destination_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+    //     }
 
-        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
-    }
+    //     Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
+    // }
 
-    fn create_image_view(device: &Device, image: &vk::Image, format: vk::Format, aspect_flags: vk::ImageAspectFlags, mip_levels: u32, allocator: &mut VkAllocator) -> vk::ImageView {
-        let view_info = vk::ImageViewCreateInfo {
-            s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
-            image: *image,
-            view_type: vk::ImageViewType::TYPE_2D,
-            format,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: aspect_flags,
-                base_mip_level: 0,
-                level_count: mip_levels,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-            ..Default::default()
-        };
+    // fn create_image_view(device: &Device, image: &vk::Image, format: vk::Format, aspect_flags: vk::ImageAspectFlags, mip_levels: u32, allocator: &mut VkAllocator) -> vk::ImageView {
+    //     let view_info = vk::ImageViewCreateInfo {
+    //         s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
+    //         image: *image,
+    //         view_type: vk::ImageViewType::TYPE_2D,
+    //         format,
+    //         subresource_range: vk::ImageSubresourceRange {
+    //             aspect_mask: aspect_flags,
+    //             base_mip_level: 0,
+    //             level_count: mip_levels,
+    //             base_array_layer: 0,
+    //             layer_count: 1,
+    //         },
+    //         ..Default::default()
+    //     };
 
-        unsafe {
-            device.create_image_view(&view_info, Some(&mut allocator.get_allocation_callbacks()))
-        }.unwrap()
-    }
+    //     unsafe {
+    //         device.create_image_view(&view_info, Some(&allocator.get_allocation_callbacks()))
+    //     }.unwrap()
+    // }
 
-    fn create_texture_image_view(device: &Device, image: &vk::Image, mip_levels: u32, allocator: &mut VkAllocator) -> vk::ImageView {
-        let texture_image_view = Self::create_image_view(device, image, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels, allocator);
-
-        texture_image_view
+    fn create_texture_image_view(image_allocation: &mut AllocationInfo, mip_levels: u32, allocator: &mut VkAllocator) {
+        allocator.create_image_view(image_allocation, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels).unwrap();
     }
 
     fn create_texture_sampler(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, mip_levels: u32, allocator: &mut VkAllocator) -> vk::Sampler {
@@ -1892,18 +1937,21 @@ impl VkController {
         };
 
         unsafe {
-            device.create_sampler(&sampler_info, Some(&mut allocator.get_allocation_callbacks())).unwrap()
+            device.create_sampler(&sampler_info, Some(&allocator.get_allocation_callbacks())).unwrap()
         }
     }
 
-    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_extent: &vk::Extent2D, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
+    fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, swapchain_extent: &vk::Extent2D, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> AllocationInfo {
         let depth_format = Self::find_depth_format(instance, physical_device);
 
-        let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
+        let mut allocation_info = allocator.create_image(swapchain_extent.width, swapchain_extent.height, 1, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL).unwrap();
 
-        let depth_image_view = Self::create_image_view(device, &depth_image, depth_format, vk::ImageAspectFlags::DEPTH, 1, allocator);
+        // let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
 
-        (depth_image, depth_image_memory, depth_image_view)
+        allocator.create_image_view(&mut allocation_info, depth_format, vk::ImageAspectFlags::DEPTH, 1).unwrap();
+
+        allocation_info
+        // (depth_image, depth_image_memory, depth_image_view)
     }
 
     fn find_supported_formats(instance: &Instance, physical_device: &PhysicalDevice, candidates: &[vk::Format], tiling: vk::ImageTiling, features: vk::FormatFeatureFlags) -> Option<vk::Format> {
@@ -1951,12 +1999,15 @@ impl VkController {
         }
     }
 
-    fn create_color_resources(instance: &Instance, physical_device: &PhysicalDevice, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, swapchain_format: vk::Format, swapchain_extent: &vk::Extent2D, num_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> (vk::Image, vk::DeviceMemory, vk::ImageView) {
-        let (color_image, color_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
+    fn create_color_resources(swapchain_format: vk::Format, swapchain_extent: &vk::Extent2D, num_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> AllocationInfo {
+        //let (color_image, color_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
 
-        let color_image_view = Self::create_image_view(device, &color_image, swapchain_format, vk::ImageAspectFlags::COLOR, 1, allocator);
+        let mut color_allocation = allocator.create_image(swapchain_extent.width, swapchain_extent.height, 1, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL).unwrap();
 
-        (color_image, color_image_memory, color_image_view)
+        allocator.create_image_view(&mut color_allocation, swapchain_format, vk::ImageAspectFlags::COLOR, 1).unwrap();
+
+        color_allocation
+        // (color_image, color_image_memory, color_image_view)
     }
 
     fn load_model(path: &str) -> (Vec<Vertex>, Vec<u32>) {

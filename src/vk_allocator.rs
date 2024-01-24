@@ -1,15 +1,18 @@
 use std::{borrow::Cow, collections::HashMap, ffi::c_void, rc::Rc, sync::{Arc, Mutex}};
 
-use ash::{vk::{self, StructureType, SystemAllocationScope}, Instance, Device};
+use ash::{vk::{self, DependencyFlags, StructureType, SystemAllocationScope}, Instance, Device};
+use image::DynamicImage;
 
 type MemoryTypeIndex = u32;
 type MemoryOffset = vk::DeviceSize;
 type MemorySizeRange = (vk::DeviceSize, vk::DeviceSize);
 type Alignment = usize;
 
+#[derive(Debug, Clone, Copy)]
 pub struct AllocationInfo {
     buffer: Option<vk::Buffer>,
     image: Option<vk::Image>,
+    image_view: Option<vk::ImageView>,
     memory_index: MemoryTypeIndex,
     memory_start: MemoryOffset,
     memory_end: vk::DeviceSize,
@@ -64,7 +67,7 @@ impl VkAllocator {
         };
 
         let buffer = unsafe {
-            match self.device.create_buffer(&buffer_info, None) {
+            match self.device.create_buffer(&buffer_info, Some(&self.get_allocation_callbacks())) {
                 Ok(buffer) => buffer,
                 Err(err) => return Err(Cow::from(format!("Failed to create buffer when creating buffer because: {}", err))),
             }
@@ -81,10 +84,10 @@ impl VkAllocator {
             ..Default::default()
         };
 
-        let (buffer_memory, mut allocation_info) = self.get_allocation(alloc_info.memory_type_index, alloc_info.allocation_size)?;
+        let mut allocation_info = self.get_allocation(alloc_info.memory_type_index, alloc_info.allocation_size)?;
 
         unsafe {
-            match self.device.bind_buffer_memory(buffer, buffer_memory, allocation_info.memory_start) {
+            match self.device.bind_buffer_memory(buffer, allocation_info.memory, allocation_info.memory_start) {
                 Ok(_) => {},
                 Err(err) => {
                     self.free_memory_allocation(allocation_info)?;
@@ -152,7 +155,7 @@ impl VkAllocator {
         };
 
         let image = unsafe {
-            match self.device.create_image(&image_info, None) {
+            match self.device.create_image(&image_info, Some(&self.get_allocation_callbacks())) {
                 Ok(image) => image,
                 Err(err) => return Err(Cow::from(format!("Failed to create image when creating image because: {}", err))),
             }
@@ -162,16 +165,283 @@ impl VkAllocator {
             self.device.get_image_memory_requirements(image)
         };
 
-        let (image_memory, mut image_allocation) = self.get_allocation(self.find_memory_type(mem_requirements.memory_type_bits, properties)?, mem_requirements.size)?;
+        let mut image_allocation = self.get_allocation(self.find_memory_type(mem_requirements.memory_type_bits, properties)?, mem_requirements.size)?;
 
         image_allocation.image = Some(image);
 
         unsafe {
-            self.device.bind_image_memory(image, image_memory, image_allocation.memory_start).unwrap();
+            match self.device.bind_image_memory(image, image_allocation.memory, image_allocation.memory_start) {
+                Ok(_) => {},
+                Err(err) => {
+                    self.free_memory_allocation(image_allocation)?;
+                    return Err(Cow::from(format!("Failed to bind image memory when creating image because: {}", err)));
+                },
+            };
         }
 
         Ok(image_allocation)
     }    
+
+    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags) -> Result<(AllocationInfo, u32), Cow<'static, str>> {
+        // let binding = image::open("./assets/images/viking_room.png").unwrap();
+        let image = image.to_rgba8();
+        let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
+        
+        let mip_levels = (((image.dimensions().0 as f32).max(image.dimensions().1 as f32).log2().floor() + 1.0) as u32).min(max_mip_levels);
+
+        let staging_allocation = self.create_buffer(image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+
+        unsafe {
+            let data_ptr = match self.device.map_memory(staging_allocation.memory, staging_allocation.memory_start, image_size, vk::MemoryMapFlags::empty()) {
+                Ok(ptr) => ptr as *mut u8,
+                Err(err) => {
+                    self.free_memory_allocation(staging_allocation)?;
+                    return Err(Cow::from(format!("Failed to map memory when creating device local image because: {}", err)));
+                },
+            };
+            std::ptr::copy_nonoverlapping(image.as_ptr(), data_ptr, image_size as usize);
+            self.device.unmap_memory(staging_allocation.memory);
+        };
+
+        let image_allocation = self.create_image( image.dimensions().0, image.dimensions().1, mip_levels, num_samples, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
+
+        match self.transition_image_layout(command_pool, graphics_queue, &image_allocation.image.unwrap(), vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip_levels) {
+            Ok(_) => {},
+            Err(err) => {
+                self.free_memory_allocation(staging_allocation)?;
+                self.free_memory_allocation(image_allocation)?;
+                return Err(Cow::from(format!("Failed to transition image layout when creating device local image because: {}", err)));
+            },
+        };
+        match self.copy_buffer_to_image(&staging_allocation.buffer.unwrap(), &image_allocation.image.unwrap(), image.dimensions().0, image.dimensions().1, command_pool, graphics_queue) {
+            Ok(_) => {},
+            Err(err) => {
+                self.free_memory_allocation(staging_allocation)?;
+                self.free_memory_allocation(image_allocation)?;
+                return Err(Cow::from(format!("Failed to copy buffer to image when creating device local image because: {}", err)));
+            },
+        };
+        //Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, mip_levels);
+        
+        self.free_memory_allocation(staging_allocation)?;
+        // unsafe {
+        //     // device.destroy_buffer(staging_buffer, Some(&mut allocator.get_allocation_callbacks()));
+        //     // device.free_memory(staging_buffer_memory, Some(&mut allocator.get_allocation_callbacks()));
+        // }
+        
+        self.generate_mipmaps(command_pool, graphics_queue, &image_allocation.image.unwrap(), vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels)?;
+        
+        Ok((image_allocation, mip_levels))
+    }
+
+    pub fn create_image_view(&mut self, allocation_info: &mut AllocationInfo, format: vk::Format, aspect_flags: vk::ImageAspectFlags, mip_levels: u32) -> Result<(), Cow<'static, str>> {
+        let image = match allocation_info.image {
+            Some(image) => image,
+            None => return Err(Cow::from("Failed to create image view because the image was None!")),
+        };
+        
+        let view_info = vk::ImageViewCreateInfo {
+            s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
+            image,
+            view_type: vk::ImageViewType::TYPE_2D,
+            format,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: aspect_flags,
+                base_mip_level: 0,
+                level_count: mip_levels,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            ..Default::default()
+        };
+
+        let image_view = unsafe {
+            match self.device.create_image_view(&view_info, Some(&self.get_allocation_callbacks())) {
+                Ok(image_view) => image_view,
+                Err(err) => return Err(Cow::from(format!("Failed to create image view when creating image view because: {}", err))),
+            }
+        };
+
+        allocation_info.image_view = Some(image_view);
+
+        Ok(())
+    }
+
+    fn generate_mipmaps(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, image_format: vk::Format, width: u32, height: u32, mip_levels: u32) -> Result<(), Cow<'static, str>> {
+        let format_properties = unsafe {
+            self.instance.get_physical_device_format_properties(self.physical_device, image_format)
+        };
+
+        if !format_properties.optimal_tiling_features.contains(vk::FormatFeatureFlags::SAMPLED_IMAGE_FILTER_LINEAR) {
+            panic!("Texture image format does not support linear blitting!");
+        }
+
+        let command_buffer = self.begin_single_time_command(command_pool)?;
+        
+        let mut image_barrier = vk::ImageMemoryBarrier {
+            s_type: StructureType::IMAGE_MEMORY_BARRIER,
+            image: *image,
+            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_array_layer: 0,
+                layer_count: 1,
+                level_count: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut mip_width = width as i32;
+        let mut mip_height = height as i32;
+
+        for i in 1..mip_levels {
+            image_barrier.subresource_range.base_mip_level = i - 1;
+            image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+            image_barrier.new_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+            image_barrier.dst_access_mask = vk::AccessFlags::TRANSFER_READ;
+
+            unsafe {
+                self.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::TRANSFER, vk::DependencyFlags::empty(), &[], &[], &[image_barrier]);
+            }
+
+            let blit = vk::ImageBlit {
+                src_offsets: [
+                    vk::Offset3D {
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                    },
+                    vk::Offset3D {
+                        x: mip_width,
+                        y: mip_height,
+                        z: 1,
+                    },
+                ],
+                src_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i - 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                dst_offsets: [
+                    vk::Offset3D {
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                    },
+                    vk::Offset3D {
+                        x: if mip_width > 1 { mip_width / 2 } else { 1 },
+                        y: if mip_height > 1 { mip_height / 2 } else { 1 },
+                        z: 1,
+                    },
+                ],
+                dst_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: i,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+            };
+
+            unsafe {
+                self.device.cmd_blit_image(command_buffer, *image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, *image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[blit], vk::Filter::LINEAR);
+            }
+
+            image_barrier.old_layout = vk::ImageLayout::TRANSFER_SRC_OPTIMAL;
+            image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+            image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_READ;
+            image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+            unsafe {
+                self.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, DependencyFlags::empty(), &[], &[], &[image_barrier]);
+            }
+
+            if mip_width > 1 {
+                mip_width /= 2;
+            }
+            if mip_height > 1 {
+                mip_height /= 2;
+            }
+        }
+
+        image_barrier.subresource_range.base_mip_level = mip_levels - 1;
+        image_barrier.old_layout = vk::ImageLayout::TRANSFER_DST_OPTIMAL;
+        image_barrier.new_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+        image_barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+        image_barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(command_buffer, vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER, DependencyFlags::empty(), &[], &[], &[image_barrier]);
+        } 
+
+        match self.end_single_time_command(command_pool, graphics_queue, command_buffer) {
+            Ok(_) => {},
+            Err(err) => return Err(Cow::from(format!("Failed to end single time command when generating mipmaps because: {}", err))),
+        
+        };
+        Ok(())
+    }
+
+    fn transition_image_layout(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, format: vk::Format, old_layout: vk::ImageLayout, new_layout: vk::ImageLayout, mip_levels: u32) -> Result<(), Cow<'static, str>> {
+        let command_buffer = self.begin_single_time_command(command_pool)?;
+
+        let mut barrier = vk::ImageMemoryBarrier {
+            s_type: StructureType::IMAGE_MEMORY_BARRIER,
+            old_layout,
+            new_layout,
+            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            image: *image,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: mip_levels,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            // src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
+            //     vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
+            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+            //     _ => panic!("Unsupported layout transition!"),
+            // },
+            // dst_access_mask: match new_layout {
+            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
+            //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
+            //     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            //     _ => panic!("Unsupported layout transition!"),
+            // },
+            ..Default::default()
+        };
+
+        let (source_stage, destination_stage) = match (old_layout, new_layout) {
+            (vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL) => {
+                barrier.src_access_mask = vk::AccessFlags::empty();
+                barrier.dst_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+                (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::TRANSFER)
+            },
+            (vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL) => {
+                barrier.src_access_mask = vk::AccessFlags::TRANSFER_WRITE;
+                barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
+                (vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER)
+            },
+            //(vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS),
+            _ => panic!("Unsupported layout transition! {} {}", old_layout.as_raw(), new_layout.as_raw()),
+        };
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(command_buffer, source_stage, destination_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+        }
+
+        match self.end_single_time_command(command_pool, graphics_queue, command_buffer) {
+            Ok(_) => {},
+            Err(err) => return Err(Cow::from(format!("Failed to end single time command when transitioning image layout because: {}", err))),
+        
+        };
+        Ok(())
+    }
 
     pub fn free_memory_allocation(&mut self, allocation_info: AllocationInfo) -> Result<(), Cow<'static, str>> {
         if let Some(memories) = self.device_allocations.get_mut(&allocation_info.memory_index) {
@@ -189,14 +459,21 @@ impl VkAllocator {
                     i += 1;
                 }
             }
+
+
             if let Some(buffer) = allocation_info.buffer {
                 unsafe {
-                    self.device.destroy_buffer(buffer, None);
+                    self.device.destroy_buffer(buffer, Some(&self.get_allocation_callbacks()));
                 }
             }
-            else if let Some(image) = allocation_info.image {
+            if let Some(image_view) = allocation_info.image_view {
                 unsafe {
-                    self.device.destroy_image(image, None);
+                    self.device.destroy_image_view(image_view, Some(&self.get_allocation_callbacks()));
+                }
+            }
+            if let Some(image) = allocation_info.image {
+                unsafe {
+                    self.device.destroy_image(image, Some(&self.get_allocation_callbacks()));
                 }
             }
         } else {
@@ -351,7 +628,7 @@ impl VkAllocator {
         };
 
         let memory = unsafe {
-            match self.device.allocate_memory(&alloc_info, None) {
+            match self.device.allocate_memory(&alloc_info, Some(&self.get_allocation_callbacks())) {
                 Ok(memory) => memory,
                 Err(err) => return Err(Cow::from(format!("Failed to allocate memory when allocating new device memory because: {}", err))),
             }
@@ -361,7 +638,7 @@ impl VkAllocator {
         Ok(())
     }
 
-    fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) -> Result<(vk::DeviceMemory, AllocationInfo), Cow<'static, str>> {
+    fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) -> Result<AllocationInfo, Cow<'static, str>> {
         let mut allocation = self.find_allocation(memory_type_index, size);
 
         if allocation.is_err() {
@@ -372,19 +649,20 @@ impl VkAllocator {
         allocation
     }
 
-    fn find_allocation(&mut self, memory_type_index: u32, size: u64) -> Result<(vk::DeviceMemory, AllocationInfo), Cow<'static, str>> {
+    fn find_allocation(&mut self, memory_type_index: u32, size: u64) -> Result<AllocationInfo, Cow<'static, str>> {
         if let Some(memories) = self.device_allocations.get_mut(&memory_type_index) {
             for (memory, free_ranges) in memories.iter_mut() {
                 for (start, end) in free_ranges.iter_mut() {
                     if *end - *start >= size {
-                        let allocation = Ok((*memory, AllocationInfo { // TODO handle adding image to allocation info when actually making them
+                        let allocation = Ok(AllocationInfo { // TODO handle adding image to allocation info when actually making them
                             memory_index: memory_type_index,
                             memory_start: *start,
                             memory_end: *start + size - 1,
                             buffer: None,
                             image: None,
-                            memory: *memory, 
-                        }));
+                            memory: *memory,
+                            image_view: None, 
+                        });
                         *start += size;
                         return allocation;
                     }
@@ -417,6 +695,28 @@ impl VkAllocator {
             pfn_internal_free: None,
         };
         callbacks
+    }
+}
+
+impl AllocationInfo {
+    pub fn get_memory(&self) -> vk::DeviceMemory {
+        self.memory
+    }
+
+    pub fn get_buffer(&self) -> Option<vk::Buffer> {
+        self.buffer
+    }
+
+    pub fn get_image(&self) -> Option<vk::Image> {
+        self.image
+    }
+
+    pub fn get_image_view(&self) -> Option<vk::ImageView> {
+        self.image_view
+    }
+
+    pub fn get_memory_start(&self) -> vk::DeviceSize {
+        self.memory_start
     }
 }
 
@@ -461,7 +761,11 @@ impl VkHostAllocator {
     unsafe fn allocate_new_host_memory(&mut self, size: usize, alignment: usize) -> Result<(), Cow<'static, str>> {
         let allocated_size = size.max(Self::DEFAULT_HOST_MEMORY_ALLOCATION_BYTE_SIZE).div_ceil(alignment) * alignment;
 
-        let layout = std::alloc::Layout::from_size_align(allocated_size, alignment).unwrap();
+        let layout = match std::alloc::Layout::from_size_align(allocated_size, alignment) {
+            Ok(layout) => layout,
+            Err(err) => return Err(Cow::from(format!("Failed to create layout when allocating new host memory because: {}", err))),
+        
+        };
 
         let ptr = std::alloc::alloc(layout);
         if ptr.is_null() {
@@ -485,7 +789,10 @@ impl VkHostAllocator {
             if let Some(allocations) = self.host_allocations.get_mut(&alignment) {
                 for allocation in allocations.iter_mut() {
                     if allocation.start_ptr <= ptr as *mut u8 && allocation.start_ptr.add(allocation.size) > ptr as *mut u8 {
-                        let pointer_offset: usize = ptr.offset_from(allocation.start_ptr as *mut c_void).try_into().unwrap();
+                        let pointer_offset: usize = match ptr.offset_from(allocation.start_ptr as *mut c_void).try_into() {
+                            Ok(offset) => offset,
+                            Err(err) => return Err(Cow::from(format!("Failed to free host memory because: {}", err))),
+                        };
                         allocation.free_allocations.push((pointer_offset, pointer_offset + size + ((alignment - (size % alignment)) % alignment) - 1));
                         allocation.free_allocations.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                         let mut i = 0;
@@ -508,7 +815,11 @@ impl VkHostAllocator {
     pub unsafe fn free_all_host_memory(&mut self) -> Result<(), Cow<'static, str>> {
         for (_, allocations) in self.host_allocations.iter_mut() {
             for allocation in allocations.iter_mut() {
-                std::alloc::dealloc(allocation.start_ptr, std::alloc::Layout::from_size_align(allocation.size, allocation.alignment).unwrap());
+                let layout = match std::alloc::Layout::from_size_align(allocation.size, allocation.alignment) {
+                    Ok(layout) => layout,
+                    Err(err) => return Err(Cow::from(format!("Failed to create layout when freeing all host memory because: {}", err))),
+                };
+                std::alloc::dealloc(allocation.start_ptr, layout);
             }
         }
         self.host_allocations.clear();
