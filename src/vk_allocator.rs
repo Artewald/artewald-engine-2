@@ -29,6 +29,10 @@ pub struct VkAllocator {
     physical_device: vk::PhysicalDevice,
     instance: Rc<Instance>,
     device_allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<MemorySizeRange>)>>,
+    host_allocator: Arc<Mutex<VkHostAllocator>>,
+}
+
+pub struct VkHostAllocator {
     host_allocations: HashMap<Alignment, Vec<HostAllocationPool>>,
     allocated_host_pointers: HashMap<*mut c_void, (Alignment, usize)>,
 }
@@ -43,8 +47,10 @@ impl VkAllocator {
             physical_device,
             instance,
             device_allocations: HashMap::new(),
-            host_allocations: HashMap::new(),
-            allocated_host_pointers: HashMap::new(),
+            host_allocator: Arc::new(Mutex::new(VkHostAllocator {
+                host_allocations: HashMap::new(),
+                allocated_host_pointers: HashMap::new(),
+            })),
         }
     }
 
@@ -400,10 +406,22 @@ impl VkAllocator {
         }
         Err(Cow::from("Failed to find suitable memory type!"))
     }
+
+    pub unsafe fn get_allocation_callbacks(&self) -> vk::AllocationCallbacks {
+        let callbacks = vk::AllocationCallbacks {
+            p_user_data: Arc::into_raw(self.host_allocator.clone()) as *mut c_void,
+            pfn_allocation: Some(pfn_allocation),
+            pfn_reallocation: Some(pfn_reallocation),
+            pfn_free: Some(pfn_free),
+            pfn_internal_allocation: None,
+            pfn_internal_free: None,
+        };
+        callbacks
+    }
 }
 
 // Host memory allocation
-impl VkAllocator {
+impl VkHostAllocator {
     const DEFAULT_HOST_MEMORY_ALLOCATION_BYTE_SIZE: usize = 512_000; // 512 KB
 
     pub fn allocate_host_memory(&mut self, size: usize, alignment: usize) -> Result<*mut c_void, Cow<'static, str>> {
@@ -507,22 +525,10 @@ impl VkAllocator {
         }
         Err(Cow::from("Failed to reallocate host memory!"))
     }
-
-    pub unsafe fn get_allocation_callbacks(allocator: Arc<Mutex<Self>>) -> vk::AllocationCallbacks {
-        let callbacks = vk::AllocationCallbacks {
-            p_user_data: Arc::into_raw(allocator) as *mut c_void,
-            pfn_allocation: Some(pfn_allocation),
-            pfn_reallocation: Some(pfn_reallocation),
-            pfn_free: Some(pfn_free),
-            pfn_internal_allocation: None,
-            pfn_internal_free: None,
-        };
-        callbacks
-    }
 }
 
 unsafe extern "system" fn pfn_allocation(p_user_data: *mut c_void, size: usize, alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
-    let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkAllocator>);
+    let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkHostAllocator>);
     
     let alloced_ptr = {
         let allocator = &mut allocator_arc.lock().unwrap();
@@ -585,7 +591,7 @@ unsafe extern "system" fn pfn_allocation(p_user_data: *mut c_void, size: usize, 
 }
 
 unsafe extern "system" fn pfn_reallocation(p_user_data: *mut c_void, original: *mut c_void, size: usize, alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
-    let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkAllocator>);
+    let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkHostAllocator>);
     
     let realloc_ptr = {
         let allocator = &mut allocator_arc.lock().unwrap();
@@ -651,7 +657,7 @@ unsafe extern "system" fn pfn_free(p_user_data: *mut c_void, ptr: *mut c_void) {
         return;
     }
 
-    let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkAllocator>);
+    let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkHostAllocator>);
     {
         let allocator = &mut allocator_arc.lock().unwrap();
         match allocator.free_host_memory(ptr) {
