@@ -10,7 +10,7 @@ mod vk_allocator;
 
 fn main() {
     let event_loop = EventLoop::new();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let window = WindowBuilder::new().with_title("Artewald Engine 2").build(&event_loop).unwrap();
 
     let mut vk_controller = VkController::new(window, "Artewald Engine 2");
 
