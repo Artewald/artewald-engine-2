@@ -1,12 +1,12 @@
-use std::{borrow::Cow, collections::{HashSet, HashMap, hash_map}, fs::read_to_string, rc::Rc, sync::{Arc, Mutex}, time::Instant};
+use std::{borrow::Cow, collections::{HashSet, HashMap, hash_map}, fs::read_to_string, rc::Rc, time::Instant};
 
-use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DependencyFlags, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageSubresourceRange, ImageView, ImageViewCreateInfo, InstanceCreateFlags, InstanceCreateInfo, KhrPortabilityEnumerationFn, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
+use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{vertex::Vertex, graphics_objects::UniformBufferObject, vk_allocator::{AllocationInfo, VkAllocator}};
+use crate::{vertex::{Vertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, graphics_objects::UniformBufferObject, vk_allocator::{AllocationInfo, VkAllocator}};
 
 
 
@@ -44,16 +44,9 @@ pub struct VkController {
     in_flight_fences: Vec<vk::Fence>,
     vertices: Vec<Vertex>,
     indices: Vec<u32>,
-    // vertex_buffer: vk::Buffer,
-    // vertex_buffer_memory: vk::DeviceMemory,
     vertex_allocation: Option<AllocationInfo>,
-    // index_buffer: vk::Buffer,
-    // index_buffer_memory: vk::DeviceMemory,
     index_allocation: Option<AllocationInfo>,
-    // uniform_buffers: Vec<vk::Buffer>,
-    // uniform_buffers_memory: Vec<vk::DeviceMemory>,
     uniform_allocation: Option<AllocationInfo>,
-    // uniform_buffers_mapping: Vec<*mut std::ffi::c_void>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
     is_minimized: bool,
@@ -61,18 +54,9 @@ pub struct VkController {
     descriptor_pool: vk::DescriptorPool,
     descriptor_sets: Vec<vk::DescriptorSet>,
     mip_levels: u32,
-    // texture_image: vk::Image,
-    // texture_image_memory: vk::DeviceMemory,
-    // texture_image_view: vk::ImageView,
     texture_image_allocation: Option<AllocationInfo>,
     texture_sampler: vk::Sampler,
-    // color_image: vk::Image,
-    // color_image_memory: vk::DeviceMemory,
-    // color_image_view: vk::ImageView,
     color_image_allocation: Option<AllocationInfo>,
-    // depth_image: vk::Image,
-    // depth_image_memory: vk::DeviceMemory,
-    // depth_image_view: vk::ImageView,
     depth_image_allocation: Option<AllocationInfo>,
     msaa_samples: vk::SampleCountFlags,
     allocator: VkAllocator,
@@ -205,34 +189,18 @@ impl VkController {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-            // vertex_buffer,
-            // vertex_buffer_memory,
             vertex_allocation: Some(vertex_allocation),
-            // index_buffer,
-            // index_buffer_memory,
             index_allocation: Some(index_allocation),
-            // uniform_buffers,
-            // uniform_buffers_memory,
             uniform_allocation: Some(uniform_allocation),
-            // uniform_buffers_mapping,
             current_frame: 0,
             frame_buffer_resized: false,
             is_minimized: false,
             start_time: Instant::now(),
             descriptor_pool,
             descriptor_sets,
-            // texture_image,
-            // texture_image_memory,
-            // texture_image_view,
             texture_image_allocation: Some(texture_image_allocation),
             texture_sampler,
-            // color_image,
-            // color_image_memory,
-            // color_image_view,
             color_image_allocation: Some(color_image_allocation),
-            // depth_image,
-            // depth_image_memory,
-            // depth_image_view,
             depth_image_allocation: Some(depth_image_allocation),
             vertices,
             indices,
@@ -428,19 +396,6 @@ impl VkController {
             }
         }
 
-        // let surface_loader = Surface::new(entry, instance);
-
-        // let mut supported_present_modes = false;
-        // if let Some(index) = indices.graphics_family {
-        //     supported_present_modes = unsafe {
-        //         surface_loader.get_physical_device_surface_support(*physical_device, index, *surface)
-        //     }.unwrap();
-        // }
-        
-        // if supported_present_modes {
-        //     indices.present_family = indices.graphics_family;
-        // }
-
         indices
     }
 
@@ -517,17 +472,7 @@ impl VkController {
 
             self.device.destroy_sampler(self.texture_sampler, Some(&self.allocator.get_allocation_callbacks()));
             self.allocator.free_memory_allocation(self.texture_image_allocation.take().unwrap()).unwrap();
-            //self.device.destroy_image_view(self.texture_image_view, Some(&self.allocator.get_allocation_callbacks()));
 
-            // self.device.destroy_image(self.texture_image, Some(&self.allocator.get_allocation_callbacks()));
-            // self.device.free_memory(self.texture_image_memory, Some(&self.allocator.get_allocation_callbacks()));
-
-            // for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            //     //self.device.destroy_buffer(self.uniform_buffers[i], Some(&self.allocator.get_allocation_callbacks()));
-            //     self.allocator.free_memory_allocation(self.uniform_allocations[i]).unwrap();
-            //     //self.device.free_memory(self.uniform_buffers_memory[i], Some(&self.allocator.get_allocation_callbacks()));
-            // }
-            // self.uniform_allocations.clear();
             self.allocator.free_memory_allocation(self.uniform_allocation.take().unwrap()).unwrap();
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
@@ -538,13 +483,9 @@ impl VkController {
             self.device.destroy_pipeline_layout(self.pipeline_layout, Some(&self.allocator.get_allocation_callbacks()));
             self.device.destroy_render_pass(self.render_pass, Some(&self.allocator.get_allocation_callbacks()));
             
-            // self.device.destroy_buffer(self.index_buffer, Some(&self.allocator.get_allocation_callbacks()));
-            // self.device.free_memory(self.index_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
             self.allocator.free_memory_allocation(self.index_allocation.take().unwrap()).unwrap();
             self.index_allocation = None;
 
-            // self.device.destroy_buffer(self.vertex_buffer, Some(&self.allocator.get_allocation_callbacks()));
-            // self.device.free_memory(self.vertex_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
             self.allocator.free_memory_allocation(self.vertex_allocation.take().unwrap()).unwrap();
             self.vertex_allocation = None;
 
@@ -713,14 +654,8 @@ impl VkController {
 
     fn cleanup_swapchain(&mut self) {
         unsafe {
-            // self.device.destroy_image_view(self.color_image_view, Some(&self.allocator.get_allocation_callbacks()));
-            // self.device.destroy_image(self.color_image, Some(&self.allocator.get_allocation_callbacks()));
-            // self.device.free_memory(self.color_image_memory, Some(&self.allocator.get_allocation_callbacks()));
             self.allocator.free_memory_allocation(self.color_image_allocation.take().unwrap()).unwrap();
             self.color_image_allocation = None;
-            // self.device.destroy_image_view(self.depth_image_view, Some(&self.allocator.get_allocation_callbacks()));
-            // self.device.destroy_image(self.depth_image, Some(&self.allocator.get_allocation_callbacks()));
-            // self.device.free_memory(self.depth_image_memory, Some(&self.allocator.get_allocation_callbacks()));
             self.allocator.free_memory_allocation(self.depth_image_allocation.take().unwrap()).unwrap();
             self.depth_image_allocation = None;
             
@@ -756,7 +691,7 @@ impl VkController {
             let image_view = unsafe {
                 device.create_image_view(&view_info, Some(&allocator.get_allocation_callbacks()))
             }.unwrap();
-            swapchain_image_views.push(image_view);//Self::create_image_view(device, &swapchain_images[i], swapchain_image_format, vk::ImageAspectFlags::COLOR, 1, allocator));
+            swapchain_image_views.push(image_view);
         }
 
         swapchain_image_views
@@ -1403,11 +1338,11 @@ impl VkController {
 // Resource management
 impl VkController {
     fn create_vertex_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&vertices).unwrap(), vk::BufferUsageFlags::VERTEX_BUFFER, false).unwrap()
+        allocator.create_device_local_buffer(command_pool, graphics_queue, vertices, vk::BufferUsageFlags::VERTEX_BUFFER, false).unwrap()
     }
 
     fn create_index_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, indices: &[u32], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&indices).unwrap(), vk::BufferUsageFlags::INDEX_BUFFER, false).unwrap()
+        allocator.create_device_local_buffer(command_pool, graphics_queue, indices, vk::BufferUsageFlags::INDEX_BUFFER, false).unwrap()
     }
 
     fn create_uniform_buffers(allocator: &mut VkAllocator) -> AllocationInfo {
@@ -1592,12 +1527,9 @@ impl VkController {
 
         let mut allocation_info = allocator.create_image(swapchain_extent.width, swapchain_extent.height, 1, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL).unwrap();
 
-        // let (depth_image, depth_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, msaa_samples, depth_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
-
         allocator.create_image_view(&mut allocation_info, depth_format, vk::ImageAspectFlags::DEPTH, 1).unwrap();
 
         allocation_info
-        // (depth_image, depth_image_memory, depth_image_view)
     }
 
     fn find_supported_formats(instance: &Instance, physical_device: &PhysicalDevice, candidates: &[vk::Format], tiling: vk::ImageTiling, features: vk::FormatFeatureFlags) -> Option<vk::Format> {
@@ -1646,14 +1578,11 @@ impl VkController {
     }
 
     fn create_color_resources(swapchain_format: vk::Format, swapchain_extent: &vk::Extent2D, num_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> AllocationInfo {
-        //let (color_image, color_image_memory) = Self::create_image(instance, physical_device, device, swapchain_extent.width, swapchain_extent.height, 1, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL, allocator);
-
         let mut color_allocation = allocator.create_image(swapchain_extent.width, swapchain_extent.height, 1, num_samples, swapchain_format, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSIENT_ATTACHMENT | vk::ImageUsageFlags::COLOR_ATTACHMENT, vk::MemoryPropertyFlags::DEVICE_LOCAL).unwrap();
 
         allocator.create_image_view(&mut color_allocation, swapchain_format, vk::ImageAspectFlags::COLOR, 1).unwrap();
 
         color_allocation
-        // (color_image, color_image_memory, color_image_view)
     }
 
     fn load_model(path: &str) -> (Vec<Vertex>, Vec<u32>) {
@@ -1679,6 +1608,9 @@ impl VkController {
                 indices.push(*unique_vertices.get(&vertex).unwrap());
             }
         }
+
+        // vertices = TEST_RECTANGLE.to_vec();
+        // indices = TEST_RECTANGLE_INDICES.to_vec();
 
         (vertices, indices)
     }

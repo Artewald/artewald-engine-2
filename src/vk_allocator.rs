@@ -8,6 +8,10 @@ type MemoryOffset = vk::DeviceSize;
 type MemorySizeRange = (vk::DeviceSize, vk::DeviceSize);
 type Alignment = usize;
 
+pub trait Serializable where Self: Sized {
+    fn vec_to_u8(data: &[Self]) -> Vec<u8>;
+}
+
 #[derive(Debug, Clone)]
 pub struct AllocationInfo {
     buffer: Option<vk::Buffer>,
@@ -122,9 +126,12 @@ impl VkAllocator {
         Ok(allocation_info)
     }
 
-    pub fn create_device_local_buffer(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, data: &[u8], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+    pub fn create_device_local_buffer<T: Serializable>(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, to_serialize: &[T], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+        let data_vec = T::vec_to_u8(to_serialize);
+        let data = data_vec.as_slice();
+
         let size = std::mem::size_of_val(data);
-        
+
         let staging_allocation = self.create_buffer(size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, force_own_memory_block)?;
         
         unsafe {
@@ -693,19 +700,20 @@ impl VkAllocator {
         if let Some(memories) = self.device_allocations.get_mut(&memory_type_index) {
             for (memory, free_ranges) in memories.iter_mut() {
                 for (start, end) in free_ranges.iter_mut() {
-                    let aligned_start = *start + (alignment - (*start % alignment));
+                    let alignment_offset = if *start % alignment == 0 { 0 } else { alignment - (*start % alignment) };
+                    let aligned_start = *start + alignment_offset;
                     if *end - aligned_start >= size {
                         let allocation = Ok(AllocationInfo {
                             memory_index: memory_type_index,
                             memory_start: aligned_start,
-                            memory_end: aligned_start + size - 1,
+                            memory_end: aligned_start + size,
                             buffer: None,
                             image: None,
                             memory: *memory,
                             image_view: None,
                             uniform_pointers: Vec::new(),
                         });
-                        *start += size + (alignment - (*start % alignment));
+                        *start += size + alignment_offset;
                         return allocation;
                     }
                 }

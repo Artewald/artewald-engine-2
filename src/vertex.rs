@@ -1,8 +1,21 @@
 use ash::vk;
 use memoffset::offset_of;
 use nalgebra_glm as glm;
-use serde::{Serialize, Deserialize, ser::SerializeStruct};
 use std::hash::{Hash, Hasher};
+
+use crate::vk_allocator::Serializable;
+
+pub const TEST_RECTANGLE: [Vertex; 4] = [
+    Vertex::new(glm::Vec3::new(-0.5, -0.5, 0.0), glm::Vec3::new(0.0, 0.0, 1.0), glm::Vec2::new(0.0, 0.0)),
+    Vertex::new(glm::Vec3::new(0.5, -0.5, 0.0), glm::Vec3::new(0.0, 1.0, 0.0), glm::Vec2::new(1.0, 0.0)),
+    Vertex::new(glm::Vec3::new(0.5, 0.5, 0.0), glm::Vec3::new(1.0, 0.0, 0.0), glm::Vec2::new(1.0, 1.0)),
+    Vertex::new(glm::Vec3::new(-0.5, 0.5, 0.0), glm::Vec3::new(1.0, 1.0, 1.0), glm::Vec2::new(0.0, 1.0)),
+];
+
+pub const TEST_RECTANGLE_INDICES: [u32; 6] = [
+    0, 1, 2,
+    2, 3, 0,
+];
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
@@ -74,12 +87,24 @@ impl PartialEq for Vertex {
 
 impl Eq for Vertex {}
 
-impl Serialize for Vertex {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-        let mut state = serializer.serialize_struct("Vertex", 3)?;
-        state.serialize_field("position", &self.position.as_slice())?;
-        state.serialize_field("color", &self.color.as_slice())?;
-        state.serialize_field("tex_coord", &self.tex_coord.as_slice())?;
-        state.end()
+impl Serializable for Vertex {
+    fn vec_to_u8(vertices: &[Self]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(vertices));
+        for vertex in vertices {
+            let vertex_bytes: [u8; std::mem::size_of::<Vertex>()] = unsafe { std::mem::transmute(*vertex) };
+            bytes.extend_from_slice(&vertex_bytes);
+        }
+        bytes
+    }
+}
+
+impl Serializable for u32 {
+    fn vec_to_u8(indices: &[Self]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(std::mem::size_of_val(indices));
+        for index in indices {
+            let index_bytes: [u8; std::mem::size_of::<u32>()] = unsafe { std::mem::transmute(*index) };
+            bytes.extend_from_slice(&index_bytes);
+        }
+        bytes
     }
 }
