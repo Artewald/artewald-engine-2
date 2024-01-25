@@ -288,6 +288,25 @@ impl VkAllocator {
         Ok(())
     }
 
+    pub fn free_all_allocations(&mut self) -> Result<(), Cow<'static, str>> {
+        for (_, allocations) in self.device_allocations.iter() {
+            for (memory, _) in allocations.iter() {
+                unsafe {
+                    self.device.free_memory(*memory, Some(&self.get_allocation_callbacks()));
+                }
+            }
+        }
+        self.device_allocations.clear();
+        unsafe { 
+            let mut allocator = match self.host_allocator.lock() {
+                Ok(allocator) => allocator,
+                Err(err) => return Err(Cow::from(format!("Failed to lock host allocator when freeing all allocations because: {}", err))),
+            };
+            allocator.free_all_host_memory()?; 
+        }
+        Ok(())
+    }
+
     fn generate_mipmaps(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, image_format: vk::Format, width: u32, height: u32, mip_levels: u32) -> Result<(), Cow<'static, str>> {
         let format_properties = unsafe {
             self.instance.get_physical_device_format_properties(self.physical_device, image_format)
