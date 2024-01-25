@@ -52,8 +52,8 @@ pub struct VkController {
     index_allocation: Option<AllocationInfo>,
     // uniform_buffers: Vec<vk::Buffer>,
     // uniform_buffers_memory: Vec<vk::DeviceMemory>,
-    uniform_allocations: Vec<AllocationInfo>,
-    uniform_buffers_mapping: Vec<*mut std::ffi::c_void>,
+    uniform_allocation: Option<AllocationInfo>,
+    // uniform_buffers_mapping: Vec<*mut std::ffi::c_void>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
     is_minimized: bool,
@@ -169,11 +169,11 @@ impl VkController {
 
         let index_allocation = Self::create_index_buffer(&command_pool, &graphics_queue, &indices, &mut allocator );
 
-        let (uniform_allocations, uniform_buffers_mapping) = Self::create_uniform_buffers(&device, &mut allocator );
+        let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
         
         let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
         
-        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_allocations, &descriptor_set_layout, &texture_image_allocation, &texture_sampler);
+        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_allocation, &descriptor_set_layout, &texture_image_allocation, &texture_sampler);
         
         let command_buffers = Self::create_command_buffers(&device, &command_pool);
         
@@ -213,8 +213,8 @@ impl VkController {
             index_allocation: Some(index_allocation),
             // uniform_buffers,
             // uniform_buffers_memory,
-            uniform_allocations,
-            uniform_buffers_mapping,
+            uniform_allocation: Some(uniform_allocation),
+            // uniform_buffers_mapping,
             current_frame: 0,
             frame_buffer_resized: false,
             is_minimized: false,
@@ -516,19 +516,19 @@ impl VkController {
             self.cleanup_swapchain();
 
             self.device.destroy_sampler(self.texture_sampler, Some(&self.allocator.get_allocation_callbacks()));
-            self.allocator.free_memory_allocation(self.texture_image_allocation.unwrap()).unwrap();
-            self.texture_image_allocation = None;
+            self.allocator.free_memory_allocation(self.texture_image_allocation.take().unwrap()).unwrap();
             //self.device.destroy_image_view(self.texture_image_view, Some(&self.allocator.get_allocation_callbacks()));
 
             // self.device.destroy_image(self.texture_image, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.free_memory(self.texture_image_memory, Some(&self.allocator.get_allocation_callbacks()));
 
-            for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-                //self.device.destroy_buffer(self.uniform_buffers[i], Some(&self.allocator.get_allocation_callbacks()));
-                self.allocator.free_memory_allocation(self.uniform_allocations[i]).unwrap();
-                //self.device.free_memory(self.uniform_buffers_memory[i], Some(&self.allocator.get_allocation_callbacks()));
-            }
-            self.uniform_allocations.clear();
+            // for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            //     //self.device.destroy_buffer(self.uniform_buffers[i], Some(&self.allocator.get_allocation_callbacks()));
+            //     self.allocator.free_memory_allocation(self.uniform_allocations[i]).unwrap();
+            //     //self.device.free_memory(self.uniform_buffers_memory[i], Some(&self.allocator.get_allocation_callbacks()));
+            // }
+            // self.uniform_allocations.clear();
+            self.allocator.free_memory_allocation(self.uniform_allocation.take().unwrap()).unwrap();
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
@@ -540,12 +540,12 @@ impl VkController {
             
             // self.device.destroy_buffer(self.index_buffer, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.free_memory(self.index_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
-            self.allocator.free_memory_allocation(self.index_allocation.unwrap()).unwrap();
+            self.allocator.free_memory_allocation(self.index_allocation.take().unwrap()).unwrap();
             self.index_allocation = None;
 
             // self.device.destroy_buffer(self.vertex_buffer, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.free_memory(self.vertex_buffer_memory, Some(&self.allocator.get_allocation_callbacks()));
-            self.allocator.free_memory_allocation(self.vertex_allocation.unwrap()).unwrap();
+            self.allocator.free_memory_allocation(self.vertex_allocation.take().unwrap()).unwrap();
             self.vertex_allocation = None;
 
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
@@ -707,7 +707,7 @@ impl VkController {
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
         self.color_image_allocation = Some(Self::create_color_resources(self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
         self.depth_image_allocation = Some(Self::create_depth_resources(&self.instance, &self.physical_device, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
-        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, &self.depth_image_allocation.unwrap(), &self.color_image_allocation.unwrap(), &mut self.allocator);
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, self.depth_image_allocation.as_ref().unwrap(), self.color_image_allocation.as_ref().unwrap(), &mut self.allocator);
     }
 
     fn cleanup_swapchain(&mut self) {
@@ -715,12 +715,12 @@ impl VkController {
             // self.device.destroy_image_view(self.color_image_view, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.destroy_image(self.color_image, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.free_memory(self.color_image_memory, Some(&self.allocator.get_allocation_callbacks()));
-            self.allocator.free_memory_allocation(self.color_image_allocation.unwrap()).unwrap();
+            self.allocator.free_memory_allocation(self.color_image_allocation.take().unwrap()).unwrap();
             self.color_image_allocation = None;
             // self.device.destroy_image_view(self.depth_image_view, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.destroy_image(self.depth_image, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.free_memory(self.depth_image_memory, Some(&self.allocator.get_allocation_callbacks()));
-            self.allocator.free_memory_allocation(self.depth_image_allocation.unwrap()).unwrap();
+            self.allocator.free_memory_allocation(self.depth_image_allocation.take().unwrap()).unwrap();
             self.depth_image_allocation = None;
             
             self.swapchain_framebuffers.iter().for_each(|framebuffer| {
@@ -1214,7 +1214,7 @@ impl VkController {
             self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
         }
 
-        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, &self.vertex_allocation.unwrap(), &self.index_allocation.unwrap(), &self.pipeline_layout, &self.descriptor_sets, self.current_frame, &self.indices);
+        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, self.vertex_allocation.as_ref().unwrap(), self.index_allocation.as_ref().unwrap(), &self.pipeline_layout, &self.descriptor_sets, self.current_frame, &self.indices);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -1402,7 +1402,7 @@ impl VkController {
 // Resource management
 impl VkController {
     fn create_vertex_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&vertices).unwrap(), vk::BufferUsageFlags::VERTEX_BUFFER).unwrap()
+        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&vertices).unwrap(), vk::BufferUsageFlags::VERTEX_BUFFER, false).unwrap()
         
         // let size = std::mem::size_of_val(vertices);
         
@@ -1428,7 +1428,7 @@ impl VkController {
     }
 
     fn create_index_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, indices: &[u32], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&indices).unwrap(), vk::BufferUsageFlags::INDEX_BUFFER).unwrap()
+        allocator.create_device_local_buffer(command_pool, graphics_queue, &bincode::serialize(&indices).unwrap(), vk::BufferUsageFlags::INDEX_BUFFER, false).unwrap()
         // let size = std::mem::size_of_val(indices);
         
         // let (staging_buffer, staging_buffer_memory) = Self::create_buffer(instance, physical_device, device, size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
@@ -1489,25 +1489,28 @@ impl VkController {
     // }
 
 
-    fn create_uniform_buffers(device: &Device, allocator: &mut VkAllocator) -> (Vec<AllocationInfo>, Vec<*mut std::ffi::c_void>) {
+    fn create_uniform_buffers(allocator: &mut VkAllocator) -> AllocationInfo {
         let buffer_size = std::mem::size_of::<UniformBufferObject>();
 
-        let mut uniform_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
-        // let mut uniform_buffers_memory = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
-        let mut uniform_buffers_mapped = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        // let mut uniform_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        // // let mut uniform_buffers_memory = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        // let mut uniform_buffers_mapped = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         
-        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            let allocation_info = allocator.create_buffer(buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT).unwrap(); //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
-            uniform_buffers.push(allocation_info);//uniform_buffer);
-            // uniform_buffers_memory.push(uniform_buffer_memory);
+        // for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+        //     let allocation_info = allocator.create_buffer(buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT).unwrap(); //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        //     uniform_buffers.push(allocation_info);//uniform_buffer);
+        //     // uniform_buffers_memory.push(uniform_buffer_memory);
 
-            let data_ptr = unsafe {
-                device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), buffer_size as u64, vk::MemoryMapFlags::empty()).unwrap()
-            };
-            uniform_buffers_mapped.push(data_ptr);
-        }
+        //     dbg!(allocation_info.get_memory_start());
+        //     let data_ptr = unsafe {
+        //         device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), buffer_size as u64, vk::MemoryMapFlags::empty()).unwrap()
+        //     };
+        //     dbg!(buffer_size);
+        //     uniform_buffers_mapped.push(data_ptr);
+        // }
 
-        (uniform_buffers, uniform_buffers_mapped)
+        allocator.create_uniform_buffers(buffer_size, Self::MAX_FRAMES_IN_FLIGHT).unwrap()
+        // (uniform_buffers, uniform_buffers_mapped)
     }
 
     fn update_uniform_buffer(&mut self, current_image: usize) {
@@ -1520,7 +1523,7 @@ impl VkController {
         ubo.proj[(1, 1)] *= -1.0;
 
         unsafe {
-            std::ptr::copy_nonoverlapping(&ubo as *const UniformBufferObject as *const std::ffi::c_void, self.uniform_buffers_mapping[current_image], std::mem::size_of::<UniformBufferObject>());
+            std::ptr::copy_nonoverlapping(&ubo as *const UniformBufferObject as *const std::ffi::c_void, self.uniform_allocation.as_ref().unwrap().get_uniform_pointers()[current_image], std::mem::size_of::<UniformBufferObject>());
         }
     }
 
@@ -1580,7 +1583,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, uniform_buffers: &[AllocationInfo], descriptor_set_layout: &vk::DescriptorSetLayout, texture_allocation: &AllocationInfo, texture_sampler: &vk::Sampler) -> Vec<vk::DescriptorSet> {
+    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, uniform_buffer: &AllocationInfo, descriptor_set_layout: &vk::DescriptorSetLayout, texture_allocation: &AllocationInfo, texture_sampler: &vk::Sampler) -> Vec<vk::DescriptorSet> {
         let layouts = [*descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
         let alloc_info = vk::DescriptorSetAllocateInfo {
             s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1595,9 +1598,10 @@ impl VkController {
         };
 
         for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            let offset = unsafe {uniform_buffer.get_uniform_pointers()[i].offset_from(uniform_buffer.get_uniform_pointers()[0])} as u64;
             let buffer_info = vk::DescriptorBufferInfo {
-                buffer: uniform_buffers[i].get_buffer().unwrap(),
-                offset: 0,
+                buffer: uniform_buffer.get_buffer().unwrap(),
+                offset,
                 range: std::mem::size_of::<UniformBufferObject>() as u64,
             };
 
@@ -1644,7 +1648,7 @@ impl VkController {
     fn create_texture_image(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, allocator: &mut VkAllocator) -> (AllocationInfo, u32) {
         let binding = image::open("./assets/images/viking_room.png").unwrap();
 
-        allocator.create_device_local_image(binding, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1).unwrap()
+        allocator.create_device_local_image(binding, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false).unwrap()
         // let image = binding.to_rgba8();
         // let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
         

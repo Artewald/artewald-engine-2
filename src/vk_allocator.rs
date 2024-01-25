@@ -8,7 +8,7 @@ type MemoryOffset = vk::DeviceSize;
 type MemorySizeRange = (vk::DeviceSize, vk::DeviceSize);
 type Alignment = usize;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AllocationInfo {
     buffer: Option<vk::Buffer>,
     image: Option<vk::Image>,
@@ -17,6 +17,7 @@ pub struct AllocationInfo {
     memory_start: MemoryOffset,
     memory_end: vk::DeviceSize,
     memory: vk::DeviceMemory,
+    uniform_pointers: Vec<*mut c_void>,
 }
 
 #[derive(Debug)]
@@ -57,7 +58,27 @@ impl VkAllocator {
         }
     }
 
-    pub fn create_buffer(&mut self, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags) -> Result<AllocationInfo, Cow<'static, str>> {
+    pub fn create_uniform_buffers(&mut self, buffer_size: usize, num_buffers: usize) -> Result<AllocationInfo, Cow<'static, str>> {
+        let buffer_size = (buffer_size * num_buffers) as u64;
+
+        // let mut uniform_buffers = Vec::with_capacity(num_buffers);
+        
+        let mut allocation_info = self.create_buffer(buffer_size, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, true)?; //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        let data_ptr = unsafe {
+            self.device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), buffer_size, vk::MemoryMapFlags::empty()).unwrap()
+        };
+        for i in 0..num_buffers {
+            let offset = match (i*buffer_size as usize/num_buffers).try_into() {
+                Ok(offset) => offset,
+                Err(err) => return Err(Cow::from(format!("Failed to create uniform buffers because: {}", err))),
+            };
+            allocation_info.uniform_pointers.push(unsafe {data_ptr.offset(offset)});
+        }
+
+        Ok(allocation_info)
+    }
+
+    pub fn create_buffer(&mut self, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         let buffer_info = vk::BufferCreateInfo {
             s_type: StructureType::BUFFER_CREATE_INFO,
             size,
@@ -84,7 +105,7 @@ impl VkAllocator {
             ..Default::default()
         };
 
-        let mut allocation_info = self.get_allocation(alloc_info.memory_type_index, alloc_info.allocation_size)?;
+        let mut allocation_info = self.get_allocation(alloc_info.memory_type_index, alloc_info.allocation_size, memory_requirements.alignment, force_own_memory_block)?;
 
         unsafe {
             match self.device.bind_buffer_memory(buffer, allocation_info.memory, allocation_info.memory_start) {
@@ -101,10 +122,10 @@ impl VkAllocator {
         Ok(allocation_info)
     }
 
-    pub fn create_device_local_buffer(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, data: &[u8], buffer_usage: vk::BufferUsageFlags) -> Result<AllocationInfo, Cow<'static, str>> {
+    pub fn create_device_local_buffer(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, data: &[u8], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         let size = std::mem::size_of_val(data);
         
-        let staging_allocation = self.create_buffer(size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        let staging_allocation = self.create_buffer(size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, force_own_memory_block)?;
         
         unsafe {
             let mapped_memory_ptr = match self.device.map_memory(staging_allocation.memory, staging_allocation.memory_start, size as u64, vk::MemoryMapFlags::empty()) {
@@ -119,7 +140,7 @@ impl VkAllocator {
             self.device.unmap_memory(staging_allocation.memory);
         }
         
-        let device_local_allocation = self.create_buffer(size as u64, buffer_usage | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
+        let device_local_allocation = self.create_buffer(size as u64, buffer_usage | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, force_own_memory_block)?;
 
         self.copy_buffer(&staging_allocation, &device_local_allocation, command_pool, graphics_queue)?;
 
@@ -165,7 +186,7 @@ impl VkAllocator {
             self.device.get_image_memory_requirements(image)
         };
 
-        let mut image_allocation = self.get_allocation(self.find_memory_type(mem_requirements.memory_type_bits, properties)?, mem_requirements.size)?;
+        let mut image_allocation = self.get_allocation(self.find_memory_type(mem_requirements.memory_type_bits, properties)?, mem_requirements.size, mem_requirements.alignment, false)?;
 
         image_allocation.image = Some(image);
 
@@ -182,14 +203,14 @@ impl VkAllocator {
         Ok(image_allocation)
     }    
 
-    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags) -> Result<(AllocationInfo, u32), Cow<'static, str>> {
+    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<(AllocationInfo, u32), Cow<'static, str>> {
         // let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = image.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
         
         let mip_levels = (((image.dimensions().0 as f32).max(image.dimensions().1 as f32).log2().floor() + 1.0) as u32).min(max_mip_levels);
 
-        let staging_allocation = self.create_buffer(image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)?;
+        let staging_allocation = self.create_buffer(image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, force_own_memory_block)?;
 
         unsafe {
             let data_ptr = match self.device.map_memory(staging_allocation.memory, staging_allocation.memory_start, image_size, vk::MemoryMapFlags::empty()) {
@@ -617,8 +638,8 @@ impl VkAllocator {
         Ok(())
     }
 
-    fn allocate_new_device_memory(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) -> Result<(), Cow<'static, str>> {
-        let allocated_size = size.max(Self::DEFAULT_DEVICE_MEMORY_ALLOCATION_BYTE_SIZE);
+    fn allocate_new_device_memory(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize, force_own_memory_block: bool) -> Result<(), Cow<'static, str>> {
+        let allocated_size = size.max(Self::DEFAULT_DEVICE_MEMORY_ALLOCATION_BYTE_SIZE) * !force_own_memory_block as vk::DeviceSize + force_own_memory_block as vk::DeviceSize * size;
         
         let alloc_info = vk::MemoryAllocateInfo {
             s_type: StructureType::MEMORY_ALLOCATE_INFO,
@@ -638,32 +659,34 @@ impl VkAllocator {
         Ok(())
     }
 
-    fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize) -> Result<AllocationInfo, Cow<'static, str>> {
-        let mut allocation = self.find_allocation(memory_type_index, size);
+    fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize, alignment: vk::DeviceSize, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+        let mut allocation = self.find_allocation(memory_type_index, size, alignment);
 
         if allocation.is_err() {
-            self.allocate_new_device_memory(memory_type_index, size)?;
-            allocation = self.find_allocation(memory_type_index, size);
+            self.allocate_new_device_memory(memory_type_index, size, force_own_memory_block)?;
+            allocation = self.find_allocation(memory_type_index, size, alignment);
         }
 
         allocation
     }
 
-    fn find_allocation(&mut self, memory_type_index: u32, size: u64) -> Result<AllocationInfo, Cow<'static, str>> {
+    fn find_allocation(&mut self, memory_type_index: u32, size: u64, alignment: vk::DeviceSize) -> Result<AllocationInfo, Cow<'static, str>> {
         if let Some(memories) = self.device_allocations.get_mut(&memory_type_index) {
             for (memory, free_ranges) in memories.iter_mut() {
                 for (start, end) in free_ranges.iter_mut() {
-                    if *end - *start >= size {
-                        let allocation = Ok(AllocationInfo { // TODO handle adding image to allocation info when actually making them
+                    let aligned_start = *start + (alignment - (*start % alignment));
+                    if *end - aligned_start >= size {
+                        let allocation = Ok(AllocationInfo {
                             memory_index: memory_type_index,
-                            memory_start: *start,
-                            memory_end: *start + size - 1,
+                            memory_start: aligned_start,
+                            memory_end: aligned_start + size - 1,
                             buffer: None,
                             image: None,
                             memory: *memory,
-                            image_view: None, 
+                            image_view: None,
+                            uniform_pointers: Vec::new(),
                         });
-                        *start += size;
+                        *start += size + (alignment - (*start % alignment));
                         return allocation;
                     }
                 }
@@ -717,6 +740,10 @@ impl AllocationInfo {
 
     pub fn get_memory_start(&self) -> vk::DeviceSize {
         self.memory_start
+    }
+
+    pub fn get_uniform_pointers(&self) -> &[*mut c_void] {
+        &self.uniform_pointers
     }
 }
 
