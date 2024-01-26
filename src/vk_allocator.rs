@@ -492,7 +492,10 @@ impl VkAllocator {
 
     pub fn free_memory_allocation(&mut self, allocation_info: AllocationInfo) -> Result<(), Cow<'static, str>> {
         if let Some(memories) = self.device_allocations.get_mut(&allocation_info.memory_index) {
-            for (_, free_ranges) in memories.iter_mut() {
+            for (memory, free_ranges) in memories.iter_mut() {
+                if *memory != allocation_info.memory {
+                    continue;
+                }
                 free_ranges.push((allocation_info.memory_start, allocation_info.memory_end));
                 
                 free_ranges.sort_unstable_by(|a, b| a.0.cmp(&b.0));
