@@ -306,6 +306,7 @@ impl VkController {
             if Self::is_device_suitable(entry, instance, device, surface) {
                 msaa_samples = Self::get_max_usable_sample_count(instance, device);
                 chosen_device = Some(*device);
+                break;
             }
         }
 
@@ -359,7 +360,7 @@ impl VkController {
         };
 
         let mut score = 0;
-
+        
         if device_properties.device_type == vk::PhysicalDeviceType::DISCRETE_GPU {
             score += 1000;
         }
