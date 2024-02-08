@@ -3,7 +3,7 @@ use memoffset::offset_of;
 use nalgebra_glm as glm;
 use std::hash::{Hash, Hasher};
 
-use crate::vk_allocator::Serializable;
+use crate::{vk_allocator::{self, Serializable}, vk_controller::SerializableDebug};
 
 pub const TEST_RECTANGLE: [Vertex; 4] = [
     Vertex::new(glm::Vec3::new(-0.5, -0.5, 0.0), glm::Vec3::new(0.0, 0.0, 1.0), glm::Vec2::new(0.0, 0.0)),
@@ -89,14 +89,30 @@ impl Eq for Vertex {}
 
 impl Serializable for Vertex {
     fn to_u8(&self) -> Vec<u8> {
-        let vertex_bytes: [u8; std::mem::size_of::<Vertex>()] = unsafe { std::mem::transmute(*self) };
+        let vertex_bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
         vertex_bytes.to_vec()
+    }
+
+    fn byte_size(&self) -> usize {
+        std::mem::size_of::<Vertex>()
     }
 }
 
 impl Serializable for u32 {
     fn to_u8(&self) -> Vec<u8> {
-        let index_bytes: [u8; std::mem::size_of::<u32>()] = unsafe { std::mem::transmute(*self) };
+        let index_bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
         index_bytes.to_vec()
     }
+
+    fn byte_size(&self) -> usize {
+        std::mem::size_of::<u32>()
+    }
 }
+
+impl SerializableDebug for Vertex {}
+
+// impl std::fmt::Debug for Vertex {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         write!(f, "Vertex {{ position: {:?}, color: {:?}, tex_coord: {:?} }}", self.position, self.color, self.tex_coord)
+//     }
+// }

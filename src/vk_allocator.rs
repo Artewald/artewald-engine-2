@@ -10,6 +10,7 @@ type Alignment = usize;
 
 pub trait Serializable { // where Self: Sized
     fn to_u8(&self) -> Vec<u8>;
+    fn byte_size(&self) -> usize;
 }
 
 #[derive(Debug, Clone)]

@@ -3,7 +3,7 @@ use std::{fmt::Formatter, path::PathBuf};
 use ash::vk;
 use nalgebra_glm as glm;
 
-use crate::{vertex::Vertex, vk_allocator::Serializable, vk_controller::SerializableDebugEq};
+use crate::{vertex::Vertex, vk_allocator::Serializable, vk_controller::SerializableDebug};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(16))]
@@ -13,9 +13,19 @@ pub struct UniformBufferObject {
     pub proj: glm::Mat4,
 }
 
-fn get_shader_stage_flag_names() -> Vec<&'static str> {
-    Vec::new()
+impl Serializable for UniformBufferObject {
+    fn to_u8(&self) -> Vec<u8> {
+        let bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
+        bytes.to_vec()
+    }
+    
+    fn byte_size(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
 }
+
+impl SerializableDebug for UniformBufferObject {}
+
 
 #[derive(Clone)]
 pub struct ShaderInfo {
@@ -41,11 +51,11 @@ impl std::fmt::Debug for ShaderInfo {
 
 #[derive(Debug)]
 pub enum DescriptorContent {
-    UniformBuffer(Box<dyn SerializableDebugEq>),
+    UniformBuffer(Box<dyn SerializableDebug>),
     Texture(PathBuf),
 }
 
-pub struct RenderableObject<T: SerializableDebugEq> {
+pub struct RenderableObject<T: SerializableDebug> {
     shaders: Vec<ShaderInfo>,
     vertex_binding_info: vk::VertexInputBindingDescription,
     vertex_attribute_info: Vec<vk::VertexInputAttributeDescription>,
@@ -53,7 +63,7 @@ pub struct RenderableObject<T: SerializableDebugEq> {
     binding_descriptions: Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>,
 }
 
-impl<T: SerializableDebugEq> RenderableObject<T> {
+impl<T: SerializableDebug> RenderableObject<T> {
     pub fn new(
         shaders: Vec<ShaderInfo>,
         vertex_binding_info: vk::VertexInputBindingDescription,
@@ -100,7 +110,7 @@ impl<T: SerializableDebugEq> RenderableObject<T> {
     }
 }
 
-impl<T: SerializableDebugEq> std::fmt::Debug for RenderableObject<T>   {
+impl<T: SerializableDebug> std::fmt::Debug for RenderableObject<T>   {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "RenderableObject {{ shaders: {:?}, vertices: {:?}, ", self.shaders, self.vertices)?;
         write!(f, "vertex_binding_info {{ binding: {}, stride: {}, input_rate: {} }}, ", self.vertex_binding_info.binding, self.vertex_binding_info.stride, self.vertex_binding_info.input_rate.as_raw())?; //, vertex_binding_info: {:?},

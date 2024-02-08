@@ -6,9 +6,9 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{DescriptorContent, UniformBufferObject}, vertex::{Vertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{DescriptorContent, RenderableObject, ShaderInfo, UniformBufferObject}, vertex::{Vertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
-pub trait SerializableDebugEq: Serializable + std::fmt::Debug {}
+pub trait SerializableDebug: Serializable + std::fmt::Debug {}
 
 #[cfg(debug_assertions)]
 const IS_DEBUG_MODE: bool = true;
@@ -33,10 +33,11 @@ pub struct VkController {
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<ImageView>,
     render_pass: vk::RenderPass,
-    pipeline_layout: vk::PipelineLayout,
-    //pipeline_layouts: HashMap<Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>, vk::PipelineLayout>,
+    //pipeline_layout: vk::PipelineLayout,
+    pipeline_layouts: HashMap<Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>, vk::PipelineLayout>,
     descriptor_set_layout: vk::DescriptorSetLayout,
-    graphics_pipeline: vk::Pipeline,
+    // graphics_pipeline: vk::Pipeline,
+    graphics_pipelines: HashMap<(Vec<ShaderInfo>, vk::VertexInputBindingDescription, Vec<vk::VertexInputAttributeDescription>), vk::Pipeline>,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -128,12 +129,49 @@ impl VkController {
 
         let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples, &mut allocator );
         
-        let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
+        let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
+
+        let vert_shader = ShaderInfo::new(std::path::PathBuf::from("./assets/shaders/triangle.vert"), vk::ShaderStageFlags::VERTEX, "main".to_string());
+        let frag_shader = ShaderInfo::new(std::path::PathBuf::from("./assets/shaders/triangle.frag"), vk::ShaderStageFlags::FRAGMENT, "main".to_string());
+
+        let ubo_layout_binding = vk::DescriptorSetLayoutBinding {
+            binding: 0,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: std::ptr::null(),
+        };
+
+        let sampler_layout_binding = vk::DescriptorSetLayoutBinding {
+            binding: 1,
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
+            p_immutable_samplers: std::ptr::null(),
+        };
+
+        let elapsed = 0.0;
+        let mut ubo = UniformBufferObject {
+            model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        };
+        ubo.proj[(1, 1)] *= -1.0;
+
+        let layout_bindings = vec![(DescriptorContent::UniformBuffer(Box::new(ubo)), ubo_layout_binding), (DescriptorContent::Texture(std::path::PathBuf::from("./assets/images/viking_room.png")), sampler_layout_binding)];
+
+        let render_object = RenderableObject::new(vec![vert_shader, frag_shader], Vertex::vertex_input_binding_descriptions(), Vertex::get_attribute_descriptions(), vertices, layout_bindings);
+
+        let descriptor_set_layout = Self::create_descriptor_set_layout(&device, render_object.get_binding_descriptions().iter().map(|(_, x)| x.clone()).collect::<Vec<_>>().as_slice(), &mut allocator );
         
+        let mut pipeline_layouts = HashMap::new();
+
         let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
 
+        let mut graphics_pipelines = HashMap::new();
+
         let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator );
-        
+
         let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
 
         let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
@@ -148,13 +186,11 @@ impl VkController {
 
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
 
-        let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
-
         let vertex_allocation = Self::create_vertex_buffer(&command_pool, &graphics_queue, &vertices, &mut allocator );
 
         let index_allocation = Self::create_index_buffer(&command_pool, &graphics_queue, &indices, &mut allocator );
 
-        let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
+        let uniform_allocation = Self::create_uniform_buffers(std::mem::size_of::<UniformBufferObject>(), &mut allocator );
         
         let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
         
@@ -180,10 +216,12 @@ impl VkController {
             swapchain_image_format,
             swapchain_extent,
             swapchain_image_views,
-            pipeline_layout,
+            // pipeline_layout,
+            pipeline_layouts,
             render_pass,
             descriptor_set_layout,
-            graphics_pipeline,
+            // graphics_pipeline,
+            graphics_pipelines,
             swapchain_framebuffers,
             command_pool,
             command_buffers,
@@ -1347,44 +1385,44 @@ impl VkController {
         allocator.create_device_local_buffer(command_pool, graphics_queue, indices, vk::BufferUsageFlags::INDEX_BUFFER, false).unwrap()
     }
 
-    fn create_uniform_buffers(allocator: &mut VkAllocator) -> AllocationInfo {
-        let buffer_size = std::mem::size_of::<UniformBufferObject>();
+    fn create_uniform_buffers(uniform_buffer_size: usize, allocator: &mut VkAllocator) -> AllocationInfo {
+        //let buffer_size = std::mem::size_of::<UniformBufferObject>();
 
-        allocator.create_uniform_buffers(buffer_size, Self::MAX_FRAMES_IN_FLIGHT).unwrap()
+        allocator.create_uniform_buffers(uniform_buffer_size, Self::MAX_FRAMES_IN_FLIGHT).unwrap()
     }
 
     fn update_uniform_buffer(&mut self, current_image: usize) {
-        let elapsed = self.start_time.elapsed().as_secs_f32();
-        let mut ubo = UniformBufferObject {
-            model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-            proj: glm::perspective(self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        };
-        ubo.proj[(1, 1)] *= -1.0;
+        // let elapsed = self.start_time.elapsed().as_secs_f32();
+        // let mut ubo = UniformBufferObject {
+        //     model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+        //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+        //     proj: glm::perspective(self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        // };
+        // ubo.proj[(1, 1)] *= -1.0;
 
         unsafe {
             std::ptr::copy_nonoverlapping(&ubo as *const UniformBufferObject as *const std::ffi::c_void, self.uniform_allocation.as_ref().unwrap().get_uniform_pointers()[current_image], std::mem::size_of::<UniformBufferObject>());
         }
     }
 
-    fn create_descriptor_set_layout(device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
-        let ubo_layout_binding = vk::DescriptorSetLayoutBinding {
-            binding: 0,
-            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::VERTEX,
-            p_immutable_samplers: std::ptr::null(),
-        };
+    fn create_descriptor_set_layout(device: &Device, layout_bindings: &[vk::DescriptorSetLayoutBinding], allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
+        // let ubo_layout_binding = vk::DescriptorSetLayoutBinding {
+        //     binding: 0,
+        //     descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+        //     descriptor_count: 1,
+        //     stage_flags: vk::ShaderStageFlags::VERTEX,
+        //     p_immutable_samplers: std::ptr::null(),
+        // };
 
-        let sampler_layout_binding = vk::DescriptorSetLayoutBinding {
-            binding: 1,
-            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::FRAGMENT,
-            p_immutable_samplers: std::ptr::null(),
-        };
+        // let sampler_layout_binding = vk::DescriptorSetLayoutBinding {
+        //     binding: 1,
+        //     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+        //     descriptor_count: 1,
+        //     stage_flags: vk::ShaderStageFlags::FRAGMENT,
+        //     p_immutable_samplers: std::ptr::null(),
+        // };
 
-        let layout_bindings = [ubo_layout_binding, sampler_layout_binding];
+        // let layout_bindings = [ubo_layout_binding, sampler_layout_binding];
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo {
             s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1486,7 +1524,7 @@ impl VkController {
     }
 
     fn create_texture_image(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, allocator: &mut VkAllocator) -> (AllocationInfo, u32) {
-        let binding = image::open("./assets/images/viking_room.png").unwrap();
+        //let binding = image::open("./assets/images/viking_room.png").unwrap();
 
         allocator.create_device_local_image(binding, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false).unwrap()
     }
