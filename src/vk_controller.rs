@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{vertex::{Vertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, graphics_objects::UniformBufferObject, vk_allocator::{AllocationInfo, VkAllocator}};
+use crate::{graphics_objects::UniformBufferObject, pipeline_manager::{PipelineConfig, ShaderInfo}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, VkAllocator}};
 
 
 
@@ -42,7 +42,7 @@ pub struct VkController {
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
-    vertices: Vec<Vertex>,
+    vertices: Vec<SimpleVertex>,
     indices: Vec<u32>,
     vertex_allocation: Option<AllocationInfo>,
     index_allocation: Option<AllocationInfo>,
@@ -124,9 +124,35 @@ impl VkController {
         let swapchain_extent = Self::choose_swap_extent(&Self::query_swapchain_support(&entry, &instance, &physical_device, &surface).capabilities, &window);
         
         let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format, &mut allocator );
-
+        
         let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples, &mut allocator );
         
+        let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
+        
+        // Make the pipeline config here
+        let pipeline_config = PipelineConfig::new(
+            vec![
+                ShaderInfo {
+                    path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
+                    shader_stage_create_info: vk::PipelineShaderStageCreateInfo {
+                        s_type: StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
+                        stage: vk::ShaderStageFlags::VERTEX,
+                        module: vert_shader_module,
+                        p_name: "main".as_ptr().cast(),
+                        ..Default::default()
+                    },
+                    entry_point: "main".to_string(),
+                },
+                ShaderInfo {
+                    path: "./assets/shaders/triangle.frag".to_string(),
+                    kind: ShaderKind::Fragment,
+                    entry_point: "main".to_string(),
+                }
+            ],
+                Box::new(vertices.first().unwrap().clone()),
+                Some(vec![Box::new(UniformBufferObject::default())]),
+        );
+
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
         
         let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
@@ -142,12 +168,10 @@ impl VkController {
         let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
         
         let (mut texture_image_allocation, mip_levels) = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
-
+        
         Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
-
+        
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
-
-        let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
 
         let vertex_allocation = Self::create_vertex_buffer(&command_pool, &graphics_queue, &vertices, &mut allocator );
 
@@ -725,8 +749,8 @@ impl VkController {
         };
 
 
-        let binding_description = Vertex::vertex_input_binding_descriptions();
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
+        let binding_description = SimpleVertex::vertex_input_binding_descriptions();
+        let attribute_descriptions = SimpleVertex::get_attribute_descriptions();
         let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
 
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
@@ -1338,7 +1362,7 @@ impl VkController {
 
 // Resource management
 impl VkController {
-    fn create_vertex_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex], allocator: &mut VkAllocator) -> AllocationInfo {
+    fn create_vertex_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[SimpleVertex], allocator: &mut VkAllocator) -> AllocationInfo {
         allocator.create_device_local_buffer(command_pool, graphics_queue, vertices, vk::BufferUsageFlags::VERTEX_BUFFER, false).unwrap()
     }
 
@@ -1586,17 +1610,17 @@ impl VkController {
         color_allocation
     }
 
-    fn load_model(path: &str) -> (Vec<Vertex>, Vec<u32>) {
+    fn load_model(path: &str) -> (Vec<SimpleVertex>, Vec<u32>) {
         let (models, _) = tobj::load_obj(path, &tobj::LoadOptions::default()).unwrap();
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
-        let mut unique_vertices: HashMap<Vertex, u32> = HashMap::new();
+        let mut unique_vertices: HashMap<SimpleVertex, u32> = HashMap::new();
 
         for model in models {
             let mesh = model.mesh;
             for i in 0..mesh.indices.len() {
                 let index = mesh.indices[i] as usize;
-                let vertex = Vertex {
+                let vertex = SimpleVertex {
                     position: glm::vec3(mesh.positions[index * 3], mesh.positions[index * 3 + 1], mesh.positions[index * 3 + 2]),
                     color: glm::vec3(1.0, 1.0, 1.0),
                     tex_coord: glm::vec2(mesh.texcoords[index * 2], 1.0 - mesh.texcoords[index * 2 + 1]),

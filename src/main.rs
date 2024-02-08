@@ -1,4 +1,4 @@
-use vertex::Vertex;
+use vertex::SimpleVertex;
 use vk_controller::VkController;
 use winit::{event_loop::{EventLoop, ControlFlow}, window::WindowBuilder, event::{Event, WindowEvent, ElementState, KeyboardInput}};
 use nalgebra_glm as glm;
@@ -7,6 +7,7 @@ mod vk_controller;
 mod vertex;
 mod graphics_objects;
 mod vk_allocator;
+mod pipeline_manager;
 
 fn main() {
     let event_loop = EventLoop::new();

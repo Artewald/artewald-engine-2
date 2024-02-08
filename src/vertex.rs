@@ -3,13 +3,13 @@ use memoffset::offset_of;
 use nalgebra_glm as glm;
 use std::hash::{Hash, Hasher};
 
-use crate::vk_allocator::Serializable;
+use crate::{pipeline_manager::Vertex, vk_allocator::Serializable};
 
-pub const TEST_RECTANGLE: [Vertex; 4] = [
-    Vertex::new(glm::Vec3::new(-0.5, -0.5, 0.0), glm::Vec3::new(0.0, 0.0, 1.0), glm::Vec2::new(0.0, 0.0)),
-    Vertex::new(glm::Vec3::new(0.5, -0.5, 0.0), glm::Vec3::new(0.0, 1.0, 0.0), glm::Vec2::new(1.0, 0.0)),
-    Vertex::new(glm::Vec3::new(0.5, 0.5, 0.0), glm::Vec3::new(1.0, 0.0, 0.0), glm::Vec2::new(1.0, 1.0)),
-    Vertex::new(glm::Vec3::new(-0.5, 0.5, 0.0), glm::Vec3::new(1.0, 1.0, 1.0), glm::Vec2::new(0.0, 1.0)),
+pub const TEST_RECTANGLE: [SimpleVertex; 4] = [
+    SimpleVertex::new(glm::Vec3::new(-0.5, -0.5, 0.0), glm::Vec3::new(0.0, 0.0, 1.0), glm::Vec2::new(0.0, 0.0)),
+    SimpleVertex::new(glm::Vec3::new(0.5, -0.5, 0.0), glm::Vec3::new(0.0, 1.0, 0.0), glm::Vec2::new(1.0, 0.0)),
+    SimpleVertex::new(glm::Vec3::new(0.5, 0.5, 0.0), glm::Vec3::new(1.0, 0.0, 0.0), glm::Vec2::new(1.0, 1.0)),
+    SimpleVertex::new(glm::Vec3::new(-0.5, 0.5, 0.0), glm::Vec3::new(1.0, 1.0, 1.0), glm::Vec2::new(0.0, 1.0)),
 ];
 
 pub const TEST_RECTANGLE_INDICES: [u32; 6] = [
@@ -19,13 +19,13 @@ pub const TEST_RECTANGLE_INDICES: [u32; 6] = [
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
-pub struct Vertex {
+pub struct SimpleVertex {
     pub position: glm::Vec3,
     pub color: glm::Vec3,
     pub tex_coord: glm::Vec2,
 }
 
-impl Vertex {
+impl SimpleVertex {
     pub const fn new(position: glm::Vec3, color: glm::Vec3, tex_coord: glm::Vec2) -> Self {
         Self {
             position,
@@ -33,16 +33,18 @@ impl Vertex {
             tex_coord,
         }
     }
+}
 
-    pub fn vertex_input_binding_descriptions() -> vk::VertexInputBindingDescription {
+impl Vertex for SimpleVertex {
+    fn vertex_input_binding_descriptions(&self) -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription {
             binding: 0,
-            stride: std::mem::size_of::<Vertex>() as u32,
+            stride: std::mem::size_of::<SimpleVertex>() as u32,
             input_rate: vk::VertexInputRate::VERTEX,
         }
     }
 
-    pub fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription> {
+    fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription> {
         // If you add any 64 bit types, you need to change the format to R64G64_SFLOAT and increase the location size to 2
         let position_attribute_description = vk::VertexInputAttributeDescription {
             binding: 0,
@@ -69,7 +71,7 @@ impl Vertex {
     }
 }
 
-impl Hash for Vertex {
+impl Hash for SimpleVertex {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.position.iter().for_each(|&i| i.to_bits().hash(state));
         self.color.iter().for_each(|&i| i.to_bits().hash(state));
@@ -77,7 +79,7 @@ impl Hash for Vertex {
     }
 }
 
-impl PartialEq for Vertex {
+impl PartialEq for SimpleVertex {
     fn eq(&self, other: &Self) -> bool {
         self.position == other.position &&
         self.color == other.color &&
@@ -85,13 +87,13 @@ impl PartialEq for Vertex {
     }
 }
 
-impl Eq for Vertex {}
+impl Eq for SimpleVertex {}
 
-impl Serializable for Vertex {
+impl Serializable for SimpleVertex {
     fn vec_to_u8(vertices: &[Self]) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(std::mem::size_of_val(vertices));
         for vertex in vertices {
-            let vertex_bytes: [u8; std::mem::size_of::<Vertex>()] = unsafe { std::mem::transmute(*vertex) };
+            let vertex_bytes: [u8; std::mem::size_of::<SimpleVertex>()] = unsafe { std::mem::transmute(*vertex) };
             bytes.extend_from_slice(&vertex_bytes);
         }
         bytes
