@@ -3,7 +3,7 @@ use std::{fmt::Formatter, path::PathBuf};
 use ash::vk;
 use nalgebra_glm as glm;
 
-use crate::{vertex::Vertex, vk_allocator::Serializable};
+use crate::{vertex::Vertex, vk_allocator::Serializable, vk_controller::SerializableDebugEq};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(16))]
@@ -39,28 +39,27 @@ impl std::fmt::Debug for ShaderInfo {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum DescriptorContent<T: Serializable + std::fmt::Debug> {
-    UniformBuffer(T),
+#[derive(Debug)]
+pub enum DescriptorContent {
+    UniformBuffer(Box<dyn SerializableDebugEq>),
     Texture(PathBuf),
 }
 
-#[derive(Clone)]
-pub struct RenderableObject<T: Serializable + std::fmt::Debug, Y: Serializable + std::fmt::Debug> {
+pub struct RenderableObject<T: SerializableDebugEq> {
     shaders: Vec<ShaderInfo>,
     vertex_binding_info: vk::VertexInputBindingDescription,
     vertex_attribute_info: Vec<vk::VertexInputAttributeDescription>,
     vertices: Vec<T>,
-    binding_descriptions: Vec<(DescriptorContent<Y>, vk::DescriptorSetLayoutBinding)>,
+    binding_descriptions: Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>,
 }
 
-impl<T: Serializable + std::fmt::Debug, Y: Serializable + std::fmt::Debug> RenderableObject<T, Y> {
+impl<T: SerializableDebugEq> RenderableObject<T> {
     pub fn new(
         shaders: Vec<ShaderInfo>,
         vertex_binding_info: vk::VertexInputBindingDescription,
         vertex_attribute_info: Vec<vk::VertexInputAttributeDescription>,
         vertices: Vec<T>,
-        binding_descriptions: Vec<(DescriptorContent<Y>, vk::DescriptorSetLayoutBinding)>,
+        binding_descriptions: Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>,
     ) -> Self {
         if shaders.len() < 2 {
             panic!("RenderableObject must have at least 2 shaders");
@@ -96,12 +95,12 @@ impl<T: Serializable + std::fmt::Debug, Y: Serializable + std::fmt::Debug> Rende
         &self.vertices
     }
 
-    pub fn get_binding_descriptions(&self) -> &Vec<(DescriptorContent<Y>, vk::DescriptorSetLayoutBinding)> {
+    pub fn get_binding_descriptions(&self) -> &Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)> {
         &self.binding_descriptions
     }
 }
 
-impl<T: Serializable + std::fmt::Debug, Y: Serializable + std::fmt::Debug> std::fmt::Debug for RenderableObject<T, Y>   {
+impl<T: SerializableDebugEq> std::fmt::Debug for RenderableObject<T>   {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "RenderableObject {{ shaders: {:?}, vertices: {:?}, ", self.shaders, self.vertices)?;
         write!(f, "vertex_binding_info {{ binding: {}, stride: {}, input_rate: {} }}, ", self.vertex_binding_info.binding, self.vertex_binding_info.stride, self.vertex_binding_info.input_rate.as_raw())?; //, vertex_binding_info: {:?},

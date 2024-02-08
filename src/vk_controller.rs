@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{HashSet, HashMap, hash_map}, fs::read_to_string, rc::Rc, time::Instant};
+use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, fs::read_to_string, hash::Hash, rc::Rc, time::Instant};
 
 use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -6,9 +6,9 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{vertex::{Vertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, graphics_objects::UniformBufferObject, vk_allocator::{AllocationInfo, VkAllocator}};
+use crate::{graphics_objects::{DescriptorContent, UniformBufferObject}, vertex::{Vertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
-
+pub trait SerializableDebugEq: Serializable + std::fmt::Debug {}
 
 #[cfg(debug_assertions)]
 const IS_DEBUG_MODE: bool = true;
@@ -34,6 +34,7 @@ pub struct VkController {
     swapchain_image_views: Vec<ImageView>,
     render_pass: vk::RenderPass,
     pipeline_layout: vk::PipelineLayout,
+    //pipeline_layouts: HashMap<Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>, vk::PipelineLayout>,
     descriptor_set_layout: vk::DescriptorSetLayout,
     graphics_pipeline: vk::Pipeline,
     swapchain_framebuffers: Vec<vk::Framebuffer>,

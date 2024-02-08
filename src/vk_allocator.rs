@@ -8,8 +8,8 @@ type MemoryOffset = vk::DeviceSize;
 type MemorySizeRange = (vk::DeviceSize, vk::DeviceSize);
 type Alignment = usize;
 
-pub trait Serializable where Self: Sized {
-    fn vec_to_u8(data: &[Self]) -> Vec<u8>;
+pub trait Serializable { // where Self: Sized
+    fn to_u8(&self) -> Vec<u8>;
 }
 
 #[derive(Debug, Clone)]
@@ -127,7 +127,7 @@ impl VkAllocator {
     }
 
     pub fn create_device_local_buffer<T: Serializable>(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, to_serialize: &[T], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
-        let data_vec = T::vec_to_u8(to_serialize);
+        let data_vec = Self::slice_of_serializable_to_u8(to_serialize);
         let data = data_vec.as_slice();
 
         let size = std::mem::size_of_val(data);
@@ -312,6 +312,10 @@ impl VkAllocator {
             allocator.free_all_host_memory()?; 
         }
         Ok(())
+    }
+
+    fn slice_of_serializable_to_u8<T: Serializable>(vec: &[T]) -> Vec<u8> {
+        vec.iter().map(|item| item.to_u8()).flatten().collect()
     }
 
     fn generate_mipmaps(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, image_format: vk::Format, width: u32, height: u32, mip_levels: u32) -> Result<(), Cow<'static, str>> {
