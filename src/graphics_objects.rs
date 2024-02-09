@@ -13,13 +13,36 @@ pub struct UniformBufferObject {
     pub proj: glm::Mat4,
 }
 
-impl GraphicsResource for UniformBufferObject {
+pub struct UniformBufferResource<T> {
+    pub buffer: T,
+    pub binding: u32,
+}
+
+impl<T> GraphicsResource for UniformBufferResource<T> {
     fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
         vk::DescriptorSetLayoutBinding {
-            binding: 0,
+            binding: self.binding,
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: std::ptr::null(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SimpleObjectTextureResource {
+    pub path: PathBuf,
+    pub binding: u32,
+}
+
+impl GraphicsResource for SimpleObjectTextureResource {
+    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
+        vk::DescriptorSetLayoutBinding {
+            binding: self.binding,
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::FRAGMENT,
             p_immutable_samplers: std::ptr::null(),
         }
     }

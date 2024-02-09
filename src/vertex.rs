@@ -17,7 +17,7 @@ pub const TEST_RECTANGLE_INDICES: [u32; 6] = [
     2, 3, 0,
 ];
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 #[repr(C)]
 pub struct SimpleVertex {
     pub position: glm::Vec3,
@@ -36,7 +36,7 @@ impl SimpleVertex {
 }
 
 impl Vertex for SimpleVertex {
-    fn vertex_input_binding_descriptions(&self) -> vk::VertexInputBindingDescription {
+    fn vertex_input_binding_description(&self) -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription {
             binding: 0,
             stride: std::mem::size_of::<SimpleVertex>() as u32,

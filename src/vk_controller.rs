@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::UniformBufferObject, pipeline_manager::{PipelineConfig, ShaderInfo}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, VkAllocator}};
+use crate::{graphics_objects::{SimpleObjectTextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, ShaderInfo, Vertex}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, VkAllocator}};
 
 
 
@@ -134,23 +134,28 @@ impl VkController {
             vec![
                 ShaderInfo {
                     path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
-                    shader_stage_create_info: vk::PipelineShaderStageCreateInfo {
-                        s_type: StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-                        stage: vk::ShaderStageFlags::VERTEX,
-                        module: vert_shader_module,
-                        p_name: "main".as_ptr().cast(),
-                        ..Default::default()
-                    },
+                    shader_stage_flag: vk::ShaderStageFlags::VERTEX,
                     entry_point: "main".to_string(),
                 },
                 ShaderInfo {
-                    path: "./assets/shaders/triangle.frag".to_string(),
-                    kind: ShaderKind::Fragment,
+                    path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
+                    shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
                     entry_point: "main".to_string(),
                 }
             ],
-                Box::new(vertices.first().unwrap().clone()),
-                Some(vec![Box::new(UniformBufferObject::default())]),
+            Box::new(*vertices.first().unwrap()),
+            Some(vec![Box::new(UniformBufferResource { buffer: UniformBufferObject {
+                    model: glm::identity(),
+                    view: glm::identity(),
+                    proj: glm::identity(),
+                }, binding: 0 }),
+                Box::new(SimpleObjectTextureResource {
+                    path: std::path::PathBuf::from("./assets/textures/viking_room.png"),
+                    binding: 1,
+            })]),
+            msaa_samples,
+            swapchain_image_format,
+            Self::find_depth_format(&instance, &physical_device),
         );
 
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
@@ -749,8 +754,8 @@ impl VkController {
         };
 
 
-        let binding_description = SimpleVertex::vertex_input_binding_descriptions();
-        let attribute_descriptions = SimpleVertex::get_attribute_descriptions();
+        let binding_description = SimpleVertex::default().vertex_input_binding_description();
+        let attribute_descriptions = SimpleVertex::default().get_attribute_descriptions();
         let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
 
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
