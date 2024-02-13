@@ -90,23 +90,15 @@ impl PartialEq for SimpleVertex {
 impl Eq for SimpleVertex {}
 
 impl Serializable for SimpleVertex {
-    fn vec_to_u8(vertices: &[Self]) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(std::mem::size_of_val(vertices));
-        for vertex in vertices {
-            let vertex_bytes: [u8; std::mem::size_of::<SimpleVertex>()] = unsafe { std::mem::transmute(*vertex) };
-            bytes.extend_from_slice(&vertex_bytes);
-        }
-        bytes
+    fn to_u8(&self) -> Vec<u8> {
+        let vertex_bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
+        vertex_bytes.to_vec()
     }
 }
 
 impl Serializable for u32 {
-    fn vec_to_u8(indices: &[Self]) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(std::mem::size_of_val(indices));
-        for index in indices {
-            let index_bytes: [u8; std::mem::size_of::<u32>()] = unsafe { std::mem::transmute(*index) };
-            bytes.extend_from_slice(&index_bytes);
-        }
-        bytes
+    fn to_u8(&self) -> Vec<u8> {
+        let index_bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
+        index_bytes.to_vec()
     }
 }

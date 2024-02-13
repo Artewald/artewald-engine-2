@@ -3,7 +3,7 @@ use std::{fmt::Formatter, path::PathBuf};
 use ash::vk;
 use nalgebra_glm as glm;
 
-use crate::{pipeline_manager::GraphicsResource, vertex::SimpleVertex, vk_allocator::Serializable};
+use crate::{pipeline_manager::{GraphicsResource, PipelineConfig}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable}};
 
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C, align(16))]
@@ -47,3 +47,11 @@ impl GraphicsResource for SimpleObjectTextureResource {
         }
     }
 }
+
+pub struct GraphicsObject {
+    vertex_allocation: AllocationInfo,
+    index_allocation: AllocationInfo,
+    extra_resource_allocations: Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo)>,
+    pipeline_config: PipelineConfig,
+}
+
