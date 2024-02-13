@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fs::read_to_string};
+use std::{borrow::Cow, ffi::CString, fs::read_to_string};
 
 use ash::{vk::{self, StructureType}, Device};
 use shaderc::{Compiler, ShaderKind};
@@ -17,7 +17,7 @@ pub trait GraphicsResource {
 pub struct ShaderInfo {
     pub path: std::path::PathBuf,
     pub shader_stage_flag: vk::ShaderStageFlags,
-    pub entry_point: String,
+    pub entry_point: CString,
 }
 
 pub struct PipelineConfig {
@@ -31,9 +31,9 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    pub fn new(shaders: Vec<ShaderInfo>, vertex: Box<dyn Vertex>, resources: Option<Vec<Box<dyn GraphicsResource>>>, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
-        let vertex_binding_info = vertex.vertex_input_binding_description();
-        let vertex_attribute_info = vertex.get_attribute_descriptions();
+    pub fn new(shaders: Vec<ShaderInfo>, vertex_sample: Box<dyn Vertex>, resources: Option<Vec<Box<dyn GraphicsResource>>>, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
+        let vertex_binding_info = vertex_sample.vertex_input_binding_description();
+        let vertex_attribute_info = vertex_sample.get_attribute_descriptions();
         if vertex_attribute_info.len() == 0 {
             return Err(Cow::Borrowed("Vertex attribute descriptions are empty"));
         }
@@ -86,7 +86,7 @@ impl PipelineConfig {
                 vk::ShaderStageFlags::FRAGMENT => ShaderKind::Fragment,
                 _ => panic!("Invalid shader stage flag for shader with path {:?}. This should never happen! The stage flag had number: {}!", shader_info.path, shader_info.shader_stage_flag.as_raw()),
             };
-            let code = Self::compile_shader(&shader_info.path, &shader_info.entry_point, shader_kind, &shader_info.entry_point);
+            let code = Self::compile_shader(&shader_info.path, &shader_info.entry_point.to_str().unwrap(), shader_kind, &shader_info.path.to_string_lossy());
             let module = Self::create_shader_module(device, code, allocator);
             (shader_info, module)
         }).collect::<Vec<_>>();
@@ -96,7 +96,7 @@ impl PipelineConfig {
                 s_type: StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
                 stage: shader_info.shader_stage_flag,
                 module: *shader_module,
-                p_name: shader_info.entry_point.as_ptr().cast(),
+                p_name: shader_info.entry_point.as_ptr(),
                 ..Default::default()
             }
         }).collect();

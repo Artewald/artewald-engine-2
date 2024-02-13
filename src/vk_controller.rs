@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{HashSet, HashMap, hash_map}, fs::read_to_string, rc::Rc, time::Instant};
+use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, ffi::CString, fs::read_to_string, rc::Rc, time::Instant};
 
 use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -135,12 +135,12 @@ impl VkController {
                 ShaderInfo {
                     path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
                     shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-                    entry_point: "main".to_string(),
+                    entry_point: CString::new("main").unwrap(),
                 },
                 ShaderInfo {
                     path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
                     shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-                    entry_point: "main".to_string(),
+                    entry_point: CString::new("main").unwrap(),
                 }
             ],
             Box::new(*vertices.first().unwrap()),
@@ -156,13 +156,13 @@ impl VkController {
             msaa_samples,
             swapchain_image_format,
             Self::find_depth_format(&instance, &physical_device),
-        );
+        ).unwrap();
 
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
         
         let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
 
-        let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator );
+        let graphics_pipeline = pipeline_config.create_graphics_pipeline(&device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
         
         let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
 
@@ -734,6 +734,8 @@ impl VkController {
         let vert_shader_code = Self::compile_shader("./assets/shaders/triangle.vert", ShaderKind::Vertex, "triangle.vert");
         let frag_shader_code = Self::compile_shader("./assets/shaders/triangle.frag", ShaderKind::Fragment, "triangle.frag");
 
+        let entrypoint_name = CString::new("main").unwrap();
+
         let vert_shader_module = Self::create_shader_module(device, vert_shader_code, allocator);
         let frag_shader_module = Self::create_shader_module(device, frag_shader_code, allocator);
 
@@ -741,7 +743,7 @@ impl VkController {
             s_type: StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
             stage: vk::ShaderStageFlags::VERTEX,
             module: vert_shader_module,
-            p_name: "main".as_ptr().cast(),
+            p_name: entrypoint_name.as_ptr(),
             ..Default::default()
         };
 
@@ -749,7 +751,7 @@ impl VkController {
             s_type: StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
             stage: vk::ShaderStageFlags::FRAGMENT,
             module: frag_shader_module,
-            p_name: "main".as_ptr().cast(),
+            p_name: entrypoint_name.as_ptr(),
             ..Default::default()
         };
 
