@@ -1,17 +1,24 @@
-use std::{borrow::Cow, ffi::CString, fs::read_to_string};
+use std::{borrow::Cow, ffi::CString, fs::read_to_string, sync::Arc};
 
 use ash::{vk::{self, StructureType}, Device};
+use image::DynamicImage;
 use shaderc::{Compiler, ShaderKind};
 
-use crate::vk_allocator::VkAllocator;
+use crate::vk_allocator::{Serializable, VkAllocator};
 
-pub trait Vertex {
+pub enum GraphicsResourceType {
+    UniformBuffer(Box<dyn Serializable>),
+    Texture(DynamicImage),
+}
+
+pub trait Vertex: Serializable {
     fn vertex_input_binding_description(&self) -> vk::VertexInputBindingDescription;
     fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
 }
 
 pub trait GraphicsResource {
     fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding;
+    fn get_resource(&self) -> GraphicsResourceType;
 }
 
 pub struct ShaderInfo {
