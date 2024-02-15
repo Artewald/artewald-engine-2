@@ -16,6 +16,7 @@ pub trait Serializable {
 pub struct AllocationInfo {
     buffer: Option<vk::Buffer>,
     image: Option<vk::Image>,
+    mip_levels: Option<u32>,
     image_view: Option<vk::ImageView>,
     memory_index: MemoryTypeIndex,
     memory_start: MemoryOffset,
@@ -126,7 +127,42 @@ impl VkAllocator {
         Ok(allocation_info)
     }
 
-    pub fn create_device_local_buffer<T: Serializable>(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, to_serialize: &[T], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+    pub fn create_device_local_buffer(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, data: &[u8], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+        // let data_vec = Self::serializable_vec_to_u8_vec(to_serialize);
+        // let data = data_vec.as_slice();
+
+        let size = std::mem::size_of_val(data);
+
+        let staging_allocation = self.create_buffer(size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, force_own_memory_block)?;
+        
+        unsafe {
+            let mapped_memory_ptr = match self.device.map_memory(staging_allocation.memory, staging_allocation.memory_start, size as u64, vk::MemoryMapFlags::empty()) {
+                Ok(ptr) => ptr as *mut u8,
+                Err(err) => {
+                    self.free_memory_allocation(staging_allocation)?;
+                    return Err(Cow::from(format!("Failed to map memory when creating device local buffer because: {}", err)));
+                },
+            };
+            let data_ptr = data.as_ptr();
+            std::ptr::copy_nonoverlapping(data_ptr, mapped_memory_ptr, size);
+            self.device.unmap_memory(staging_allocation.memory);
+        }
+        
+        let device_local_allocation = self.create_buffer(size as u64, buffer_usage | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, force_own_memory_block)?;
+
+        self.copy_buffer(&staging_allocation, &device_local_allocation, command_pool, graphics_queue)?;
+
+        if self.free_memory_allocation(staging_allocation).is_err() {
+            if self.free_memory_allocation(device_local_allocation).is_err() {
+                return Err(Cow::from("Failed to free device local buffer allocation after freeing staging buffer allocation failed!"));
+            }
+            return Err(Cow::from("Failed to free staging buffer allocation!"));
+        }
+
+        Ok(device_local_allocation)
+    }
+
+    pub fn create_device_local_buffer_test<T: Serializable>(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, to_serialize: &[T], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         let data_vec = Self::serializable_vec_to_u8_vec(to_serialize);
         let data = data_vec.as_slice();
 
@@ -210,7 +246,7 @@ impl VkAllocator {
         Ok(image_allocation)
     }    
 
-    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<(AllocationInfo, u32), Cow<'static, str>> {
+    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         // let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = image.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
@@ -231,7 +267,7 @@ impl VkAllocator {
             self.device.unmap_memory(staging_allocation.memory);
         };
 
-        let image_allocation = self.create_image( image.dimensions().0, image.dimensions().1, mip_levels, num_samples, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
+        let mut image_allocation = self.create_image( image.dimensions().0, image.dimensions().1, mip_levels, num_samples, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
 
         match self.transition_image_layout(command_pool, graphics_queue, &image_allocation.image.unwrap(), vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip_levels) {
             Ok(_) => {},
@@ -259,7 +295,9 @@ impl VkAllocator {
         
         self.generate_mipmaps(command_pool, graphics_queue, &image_allocation.image.unwrap(), vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels)?;
         
-        Ok((image_allocation, mip_levels))
+        image_allocation.mip_levels = Some(mip_levels);
+
+        Ok(image_allocation)
     }
 
     pub fn create_image_view(&mut self, allocation_info: &mut AllocationInfo, format: vk::Format, aspect_flags: vk::ImageAspectFlags, mip_levels: u32) -> Result<(), Cow<'static, str>> {
@@ -723,6 +761,7 @@ impl VkAllocator {
                             memory: *memory,
                             image_view: None,
                             uniform_pointers: Vec::new(),
+                            mip_levels: None,
                         });
                         *start += size + alignment_offset;
                         return allocation;
@@ -782,6 +821,10 @@ impl AllocationInfo {
 
     pub fn get_uniform_pointers(&self) -> &[*mut c_void] {
         &self.uniform_pointers
+    }
+
+    pub fn get_mip_levels(&self) -> Option<u32> {
+        self.mip_levels
     }
 }
 

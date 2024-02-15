@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, ffi::CString, fs::read_to_string, rc::Rc, time::Instant};
+use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, ffi::CString, fs::read_to_string, rc::Rc, sync::Arc, time::Instant};
 
 use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{SimpleObjectTextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, ShaderInfo, Vertex}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, VkAllocator}};
+use crate::{graphics_objects::{SimpleObjectTextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, ShaderInfo, Vertex}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 
 
@@ -143,16 +143,16 @@ impl VkController {
                     entry_point: CString::new("main").unwrap(),
                 }
             ],
-            Box::new(*vertices.first().unwrap()),
-            Some(vec![Box::new(UniformBufferResource { buffer: UniformBufferObject {
+            Arc::new(*vertices.first().unwrap()),
+            vec![Arc::new(UniformBufferResource { buffer: UniformBufferObject {
                     model: glm::identity(),
                     view: glm::identity(),
                     proj: glm::identity(),
                 }, binding: 0 }),
-                Box::new(SimpleObjectTextureResource {
+                Arc::new(SimpleObjectTextureResource {
                     path: std::path::PathBuf::from("./assets/textures/viking_room.png"),
                     binding: 1,
-            })]),
+            })],
             msaa_samples,
             swapchain_image_format,
             Self::find_depth_format(&instance, &physical_device),
@@ -172,8 +172,9 @@ impl VkController {
         
         let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
         
-        let (mut texture_image_allocation, mip_levels) = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
-        
+        let mut texture_image_allocation = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
+        let mip_levels = texture_image_allocation.get_mip_levels().unwrap();
+
         Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
         
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
@@ -1370,11 +1371,13 @@ impl VkController {
 // Resource management
 impl VkController {
     fn create_vertex_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[SimpleVertex], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, vertices, vk::BufferUsageFlags::VERTEX_BUFFER, false).unwrap()
+        let data = vertices.iter().map(|vertex| vertex.to_u8()).flatten().collect::<Vec<u8>>();
+        allocator.create_device_local_buffer(command_pool, graphics_queue, &data, vk::BufferUsageFlags::VERTEX_BUFFER, false).unwrap()
     }
 
     fn create_index_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, indices: &[u32], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, indices, vk::BufferUsageFlags::INDEX_BUFFER, false).unwrap()
+        let data = indices.iter().map(|index| index.to_u8()).flatten().collect::<Vec<u8>>();
+        allocator.create_device_local_buffer(command_pool, graphics_queue, &data, vk::BufferUsageFlags::INDEX_BUFFER, false).unwrap()
     }
 
     fn create_uniform_buffers(allocator: &mut VkAllocator) -> AllocationInfo {
@@ -1515,7 +1518,7 @@ impl VkController {
         descriptor_sets
     }
 
-    fn create_texture_image(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, allocator: &mut VkAllocator) -> (AllocationInfo, u32) {
+    fn create_texture_image(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, allocator: &mut VkAllocator) -> AllocationInfo {
         let binding = image::open("./assets/images/viking_room.png").unwrap();
 
         allocator.create_device_local_image(binding, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false).unwrap()

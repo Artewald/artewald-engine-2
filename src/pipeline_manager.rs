@@ -7,7 +7,7 @@ use shaderc::{Compiler, ShaderKind};
 use crate::vk_allocator::{Serializable, VkAllocator};
 
 pub enum GraphicsResourceType {
-    UniformBuffer(Box<dyn Serializable>),
+    UniformBuffer(Vec<u8>),
     Texture(DynamicImage),
 }
 
@@ -38,7 +38,7 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    pub fn new(shaders: Vec<ShaderInfo>, vertex_sample: Box<dyn Vertex>, resources: Option<Vec<Box<dyn GraphicsResource>>>, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
+    pub fn new(shaders: Vec<ShaderInfo>, vertex_sample: Arc<dyn Vertex>, resources: Vec<Arc<dyn GraphicsResource>>, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
         let vertex_binding_info = vertex_sample.vertex_input_binding_description();
         let vertex_attribute_info = vertex_sample.get_attribute_descriptions();
         if vertex_attribute_info.len() == 0 {
@@ -57,14 +57,12 @@ impl PipelineConfig {
         }
 
         let mut descriptor_set_layout_bindings: Vec<vk::DescriptorSetLayoutBinding> = Vec::new();
-        if let Some(resources) = resources {
-            for resource in resources {
-                let resource_binding = resource.get_descriptor_set_layout_binding();
-                if descriptor_set_layout_bindings.iter().any(|binding| binding.binding == resource_binding.binding) {
-                    return Err(Cow::Borrowed("Descriptor set layout binding with the same binding already exists"));
-                }
-                descriptor_set_layout_bindings.push(resource_binding);
+        for resource in resources {
+            let resource_binding = resource.get_descriptor_set_layout_binding();
+            if descriptor_set_layout_bindings.iter().any(|binding| binding.binding == resource_binding.binding) {
+                return Err(Cow::Borrowed("Descriptor set layout binding with the same binding already exists"));
             }
+            descriptor_set_layout_bindings.push(resource_binding);
         }
 
         Ok(PipelineConfig {
