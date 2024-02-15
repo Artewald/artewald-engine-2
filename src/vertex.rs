@@ -36,7 +36,7 @@ impl SimpleVertex {
 }
 
 impl Vertex for SimpleVertex {
-    fn vertex_input_binding_description(&self) -> vk::VertexInputBindingDescription {
+    fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription {
             binding: 0,
             stride: std::mem::size_of::<SimpleVertex>() as u32,

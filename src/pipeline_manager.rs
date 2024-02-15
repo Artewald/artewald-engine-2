@@ -1,6 +1,6 @@
 use std::{borrow::Cow, ffi::CString, fs::read_to_string, sync::Arc};
 
-use ash::{vk::{self, StructureType}, Device};
+use ash::{vk::{self, StructureType, VertexInputAttributeDescription, VertexInputBindingDescription}, Device};
 use image::DynamicImage;
 use shaderc::{Compiler, ShaderKind};
 
@@ -12,7 +12,7 @@ pub enum GraphicsResourceType {
 }
 
 pub trait Vertex: Serializable {
-    fn vertex_input_binding_description(&self) -> vk::VertexInputBindingDescription;
+    fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription;
     fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
 }
 
@@ -21,6 +21,7 @@ pub trait GraphicsResource {
     fn get_resource(&self) -> GraphicsResourceType;
 }
 
+#[derive(PartialEq, Eq)]
 pub struct ShaderInfo {
     pub path: std::path::PathBuf,
     pub shader_stage_flag: vk::ShaderStageFlags,
@@ -38,9 +39,7 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    pub fn new(shaders: Vec<ShaderInfo>, vertex_sample: Arc<dyn Vertex>, resources: Vec<Arc<dyn GraphicsResource>>, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
-        let vertex_binding_info = vertex_sample.vertex_input_binding_description();
-        let vertex_attribute_info = vertex_sample.get_attribute_descriptions();
+    pub fn new(shaders: Vec<ShaderInfo>, vertex_binding_info: VertexInputBindingDescription, vertex_attribute_info: Vec<VertexInputAttributeDescription>, resources: Vec<Arc<dyn GraphicsResource>>, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
         if vertex_attribute_info.len() == 0 {
             return Err(Cow::Borrowed("Vertex attribute descriptions are empty"));
         }
@@ -76,7 +75,7 @@ impl PipelineConfig {
         })
     }
 
-    pub fn create_graphics_pipeline(&self, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
+    fn create_graphics_pipeline(&self, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
         for shader in self.shaders.iter() {
             if !(shader.shader_stage_flag == vk::ShaderStageFlags::VERTEX ||
                 shader.shader_stage_flag == vk::ShaderStageFlags::FRAGMENT)  
@@ -405,6 +404,40 @@ impl PipelineConfig {
     }
 }
 
+impl Eq for PipelineConfig {}
+
+impl PartialEq for PipelineConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.shaders == other.shaders &&
+        self.vertex_binding_info.binding == other.vertex_binding_info.binding &&
+        self.vertex_binding_info.stride == other.vertex_binding_info.stride &&
+        self.vertex_binding_info.input_rate == other.vertex_binding_info.input_rate &&
+        self.vertex_attribute_info.iter().all(|attribute| other.vertex_attribute_info.iter().any(|other_attribute| attribute.binding == other_attribute.binding && attribute.location == other_attribute.location && attribute.format == other_attribute.format && attribute.offset == other_attribute.offset)) &&
+        self.descriptor_set_layout_bindings.iter().all(|binding| other.descriptor_set_layout_bindings.iter().any(|other_binding| binding.binding == other_binding.binding && binding.descriptor_type == other_binding.descriptor_type && binding.descriptor_count == other_binding.descriptor_count && binding.stage_flags == other_binding.stage_flags)) &&
+        self.msaa_samples == other.msaa_samples &&
+        self.swapchain_format == other.swapchain_format &&
+        self.depth_format == other.depth_format
+    }
+}
+
 pub struct PipelineManager {
-    
+    graphics_pipelines: Vec<(PipelineConfig, vk::Pipeline)>,
+}
+
+impl PipelineManager {
+    pub fn new() -> Self {
+        PipelineManager {
+            graphics_pipelines: Vec::new(),
+        }
+    }
+
+    pub fn get_or_create_pipeline(&mut self, pipeline_config: PipelineConfig, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
+        if let Some((config, pipeline)) = self.graphics_pipelines.iter().find(|(config, _)| *config == pipeline_config) {
+            Ok(*pipeline)
+        } else {
+            let pipeline = pipeline_config.create_graphics_pipeline(device, swapchain_extent, allocator)?;
+            self.graphics_pipelines.push((pipeline_config, pipeline));
+            Ok(pipeline)
+        }
+    }
 }

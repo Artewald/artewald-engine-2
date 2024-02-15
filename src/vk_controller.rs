@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{SimpleObjectTextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, ShaderInfo, Vertex}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{ObjectToRender, SimpleObjectTextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{self, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 
 
@@ -60,6 +60,7 @@ pub struct VkController {
     depth_image_allocation: Option<AllocationInfo>,
     msaa_samples: vk::SampleCountFlags,
     allocator: VkAllocator,
+    graphics_pipeline_manager: PipelineManager,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -129,6 +130,9 @@ impl VkController {
         
         let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
         
+        
+        let object_to_render = ObjectToRender::new();
+
         // Make the pipeline config here
         let pipeline_config = PipelineConfig::new(
             vec![
@@ -143,7 +147,8 @@ impl VkController {
                     entry_point: CString::new("main").unwrap(),
                 }
             ],
-            Arc::new(*vertices.first().unwrap()),
+            vertices.first().unwrap().get_input_binding_description(),
+            vertices.first().unwrap().get_attribute_descriptions(),
             vec![Arc::new(UniformBufferResource { buffer: UniformBufferObject {
                     model: glm::identity(),
                     view: glm::identity(),
@@ -162,7 +167,9 @@ impl VkController {
         
         let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
 
-        let graphics_pipeline = pipeline_config.create_graphics_pipeline(&device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
+        let mut pipeline_manager = PipelineManager::new();
+
+        let graphics_pipeline = pipeline_manager.get_or_create_pipeline(pipeline_config, &device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
         
         let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
 
@@ -237,6 +244,7 @@ impl VkController {
             mip_levels,
             msaa_samples,
             allocator,
+            graphics_pipeline_manager: pipeline_manager,
         }
     }
 
@@ -757,7 +765,7 @@ impl VkController {
         };
 
 
-        let binding_description = SimpleVertex::default().vertex_input_binding_description();
+        let binding_description = SimpleVertex::default().get_input_binding_description();
         let attribute_descriptions = SimpleVertex::default().get_attribute_descriptions();
         let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
 

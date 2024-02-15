@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Formatter, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::Arc};
 
 use ash::vk::{self, CommandPool, Queue};
 use nalgebra_glm as glm;
@@ -103,7 +103,7 @@ pub struct ObjectToRender<T: Vertex> {
     original_object: Arc<dyn GraphicsObject<T>>,
 }
 
-impl<T: Vertex + Clone> ObjectToRender<T> {
+impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
     pub fn new(original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue,allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let vertices = original_object.get_vertices();
         let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
@@ -152,13 +152,14 @@ impl<T: Vertex + Clone> ObjectToRender<T> {
         }
 
         let vertex_sample = match vertices.first() {
-            Some(v) => Arc::new(v.clone()) as Arc<dyn Vertex>,
+            Some(v) => v.clone(),
             None => return Err("No vertices found when trying to create graphics object for rendering".into()),
         };
 
         let pipeline_config = PipelineConfig::new(
             original_object.get_shader_infos(),
-            vertex_sample,
+            vertex_sample.get_input_binding_description(),
+            vertex_sample.get_attribute_descriptions(),
             original_object.get_resources(),
             original_object.get_msaa_samples(),
             swapchain_format,
