@@ -1,6 +1,7 @@
 use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::Arc};
 
 use ash::vk::{self, CommandPool, Queue};
+use image::DynamicImage;
 use nalgebra_glm as glm;
 
 use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, ShaderInfo, Vertex}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
@@ -44,6 +45,7 @@ impl Serializable for UniformBufferObject {
     }
 }
 
+#[derive(Clone)]
 pub struct UniformBufferResource<T: Clone> {
     pub buffer: T,
     pub binding: u32,
@@ -62,6 +64,28 @@ impl<T: Clone + Serializable> GraphicsResource for UniformBufferResource<T> {
 
     fn get_resource(&self) -> crate::pipeline_manager::GraphicsResourceType {
         GraphicsResourceType::UniformBuffer(self.buffer.to_u8())
+    }
+}
+
+pub struct TextureResource {
+    pub image: DynamicImage,
+    pub binding: u32,
+    pub stage: vk::ShaderStageFlags,
+}
+
+impl GraphicsResource for TextureResource {
+    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
+        vk::DescriptorSetLayoutBinding {
+            binding: self.binding,
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: self.stage,
+            p_immutable_samplers: std::ptr::null(),
+        }
+    }
+
+    fn get_resource(&self) -> GraphicsResourceType {
+        GraphicsResourceType::Texture(self.image.clone())
     }
 }
 

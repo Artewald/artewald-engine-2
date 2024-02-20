@@ -1,14 +1,15 @@
-use std::collections::{hash_map, HashMap};
+use std::{collections::{hash_map, HashMap}, sync::Arc};
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{GraphicsObject, UniformBufferObject, UniformBufferResource}, vertex::SimpleVertex, vk_allocator::Serializable};
+use crate::{graphics_objects::{GraphicsObject, TextureResource, UniformBufferObject, UniformBufferResource}, vertex::SimpleVertex, vk_allocator::Serializable};
 
 pub struct SimpleRenderableObject {
     pub vertices: Vec<SimpleVertex>,
     pub indices: Vec<u32>,
-    pub uniform_buffer: UniformBufferResource<UniformBufferObject>,
-    pub texture: DynamicImage,
+    pub uniform_buffer: Arc<UniformBufferResource<UniformBufferObject>>,
+    pub texture: Arc<TextureResource>,
+    
 }
 
 impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
@@ -21,7 +22,10 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
     }
 
     fn get_resources(&self) -> Vec<std::sync::Arc<dyn crate::pipeline_manager::GraphicsResource>> {
-        todo!()
+        vec![
+            self.uniform_buffer.clone(),
+            self.texture.clone(),
+        ]
     }
 
     fn get_shader_infos(&self) -> Vec<crate::pipeline_manager::ShaderInfo> {
