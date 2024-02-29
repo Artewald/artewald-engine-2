@@ -131,8 +131,8 @@ impl VkController {
         let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
         
         let obj = Arc::new(SimpleRenderableObject {
-            vertices,
-            indices,
+            vertices: vertices.clone(),
+            indices: indices.clone(),
             uniform_buffer: Arc::new(UniformBufferResource { buffer: UniformBufferObject {
                     model: glm::identity(),
                     view: glm::identity(),
@@ -156,37 +156,38 @@ impl VkController {
                 }
             ],
         });
-        let object_to_render = ObjectToRender::new(obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), ).unwrap();
+        let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
+        let object_to_render = ObjectToRender::new(obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &mut allocator).unwrap();
 
         // Make the pipeline config here
-        let pipeline_config = PipelineConfig::new(
-            vec![
-                ShaderInfo {
-                    path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
-                    shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-                    entry_point: CString::new("main").unwrap(),
-                },
-                ShaderInfo {
-                    path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
-                    shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-                    entry_point: CString::new("main").unwrap(),
-                }
-            ],
-            vertices.first().unwrap().get_input_binding_description(),
-            vertices.first().unwrap().get_attribute_descriptions(),
-            vec![Arc::new(UniformBufferResource { buffer: UniformBufferObject {
-                    model: glm::identity(),
-                    view: glm::identity(),
-                    proj: glm::identity(),
-                }, binding: 0 }),
-                Arc::new(SimpleObjectTextureResource {
-                    path: std::path::PathBuf::from("./assets/textures/viking_room.png"),
-                    binding: 1,
-            })],
-            msaa_samples,
-            swapchain_image_format,
-            Self::find_depth_format(&instance, &physical_device),
-        ).unwrap();
+        // let pipeline_config = PipelineConfig::new(
+        //     vec![
+        //         ShaderInfo {
+        //             path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
+        //             shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+        //             entry_point: CString::new("main").unwrap(),
+        //         },
+        //         ShaderInfo {
+        //             path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
+        //             shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+        //             entry_point: CString::new("main").unwrap(),
+        //         }
+        //     ],
+        //     vertices.first().unwrap().get_input_binding_description(),
+        //     vertices.first().unwrap().get_attribute_descriptions(),
+        //     vec![Arc::new(UniformBufferResource { buffer: UniformBufferObject {
+        //             model: glm::identity(),
+        //             view: glm::identity(),
+        //             proj: glm::identity(),
+        //         }, binding: 0 }),
+        //         Arc::new(SimpleObjectTextureResource {
+        //             path: std::path::PathBuf::from("./assets/textures/viking_room.png"),
+        //             binding: 1,
+        //     })],
+        //     msaa_samples,
+        //     swapchain_image_format,
+        //     Self::find_depth_format(&instance, &physical_device),
+        // ).unwrap();
 
         let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
         
@@ -194,9 +195,7 @@ impl VkController {
 
         let mut pipeline_manager = PipelineManager::new();
 
-        let graphics_pipeline = pipeline_manager.get_or_create_pipeline(pipeline_config, &device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
-        
-        let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
+        let graphics_pipeline = pipeline_manager.get_or_create_pipeline(object_to_render.get_pipeline_config(), &device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
 
         let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
         

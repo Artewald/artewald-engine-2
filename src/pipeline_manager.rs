@@ -28,6 +28,7 @@ pub struct ShaderInfo {
     pub entry_point: CString,
 }
 
+#[derive(Clone)]
 pub struct PipelineConfig {
     shaders: Vec<ShaderInfo>,
     vertex_binding_info: vk::VertexInputBindingDescription,

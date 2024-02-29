@@ -187,8 +187,20 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             msaa_samples,
             swapchain_format,
             depth_format,
-        );
+        )?;
 
-        Err("Not implemented".into())
+        Ok(Self {
+            vertex_allocation,
+            index_allocation,
+            extra_resource_allocations,
+            pipeline_config,
+            original_object,
+        })
+
+        //Err("Not implemented".into())
+    }
+
+    pub fn get_pipeline_config(&self) -> PipelineConfig {
+        self.pipeline_config.clone()
     }
 }
