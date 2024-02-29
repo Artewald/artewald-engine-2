@@ -21,7 +21,7 @@ pub trait GraphicsResource {
     fn get_resource(&self) -> GraphicsResourceType;
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone)]
 pub struct ShaderInfo {
     pub path: std::path::PathBuf,
     pub shader_stage_flag: vk::ShaderStageFlags,

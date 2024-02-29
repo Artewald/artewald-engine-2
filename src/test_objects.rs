@@ -1,15 +1,15 @@
-use std::{collections::{hash_map, HashMap}, sync::Arc};
+use std::{collections::{hash_map, HashMap}, path::PathBuf, sync::Arc};
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{GraphicsObject, TextureResource, UniformBufferObject, UniformBufferResource}, vertex::SimpleVertex, vk_allocator::Serializable};
+use crate::{graphics_objects::{GraphicsObject, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::ShaderInfo, vertex::SimpleVertex, vk_allocator::Serializable};
 
 pub struct SimpleRenderableObject {
     pub vertices: Vec<SimpleVertex>,
     pub indices: Vec<u32>,
     pub uniform_buffer: Arc<UniformBufferResource<UniformBufferObject>>,
     pub texture: Arc<TextureResource>,
-    
+    pub shaders: Vec<ShaderInfo>,
 }
 
 impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
@@ -29,11 +29,7 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
     }
 
     fn get_shader_infos(&self) -> Vec<crate::pipeline_manager::ShaderInfo> {
-        todo!()
-    }
-
-    fn get_msaa_samples(&self) -> ash::vk::SampleCountFlags {
-        todo!()
+        self.shaders.clone()
     }
 }
 

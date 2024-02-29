@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{ObjectToRender, SimpleObjectTextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{self, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{ObjectToRender, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{self, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 
 
@@ -130,8 +130,33 @@ impl VkController {
         
         let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
         
-        
-        let object_to_render = ObjectToRender::new();
+        let obj = Arc::new(SimpleRenderableObject {
+            vertices,
+            indices,
+            uniform_buffer: Arc::new(UniformBufferResource { buffer: UniformBufferObject {
+                    model: glm::identity(),
+                    view: glm::identity(),
+                    proj: glm::identity(),
+                }, binding: 0 }),
+            texture: Arc::new(TextureResource {
+                image: image::open("./assets/images/viking_room.png").unwrap(),
+                binding: 1,
+                stage: vk::ShaderStageFlags::FRAGMENT,
+            }),
+            shaders: vec![
+                ShaderInfo {
+                    path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
+                    shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+                    entry_point: CString::new("main").unwrap(),
+                },
+                ShaderInfo {
+                    path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
+                    shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+                    entry_point: CString::new("main").unwrap(),
+                }
+            ],
+        });
+        let object_to_render = ObjectToRender::new(obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), ).unwrap();
 
         // Make the pipeline config here
         let pipeline_config = PipelineConfig::new(

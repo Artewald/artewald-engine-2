@@ -116,7 +116,6 @@ pub trait GraphicsObject<T: Vertex> {
     fn get_indices(&self) -> Vec<u32>;
     fn get_resources(&self) -> Vec<Arc<dyn GraphicsResource>>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
-    fn get_msaa_samples(&self) -> vk::SampleCountFlags;
 }
 
 pub struct ObjectToRender<T: Vertex> {
@@ -128,7 +127,7 @@ pub struct ObjectToRender<T: Vertex> {
 }
 
 impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
-    pub fn new(original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue,allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+    pub fn new(original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let vertices = original_object.get_vertices();
         let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertex_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
@@ -185,7 +184,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             vertex_sample.get_input_binding_description(),
             vertex_sample.get_attribute_descriptions(),
             original_object.get_resources(),
-            original_object.get_msaa_samples(),
+            msaa_samples,
             swapchain_format,
             depth_format,
         );
