@@ -849,7 +849,7 @@ impl VkHostAllocator {
         if let Some(allocations) = self.host_allocations.get_mut(&alignment) {
             for allocation in allocations.iter_mut() {
                 for free_range in allocation.free_allocations.iter_mut() {
-                    if free_range.1 - free_range.0 >= size {
+                    if (free_range.1 + 1) - free_range.0 >= size {
                         let allocation_ptr = unsafe { allocation.start_ptr.add(free_range.0) as *mut c_void};
                         let previous = self.allocated_host_pointers.get(&allocation_ptr);
                         if previous.is_some() {
@@ -886,9 +886,7 @@ impl VkHostAllocator {
             alignment,
             free_allocations: vec![(0, allocated_size - 1)],
         };
-
         self.host_allocations.entry(alignment).or_default().push(allocation);
-
         Ok(())
     }
 

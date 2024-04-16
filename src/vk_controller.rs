@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{ObjectToRender, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{self, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{ObjectToRender, Renderable, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{self, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 
 
@@ -14,7 +14,6 @@ use crate::{graphics_objects::{ObjectToRender, SimpleObjectTextureResource, Text
 const IS_DEBUG_MODE: bool = true;
 #[cfg(not(debug_assertions))]
 const IS_DEBUG_MODE: bool = false;
-
 
 pub struct VkController {
     window: Window,
@@ -32,20 +31,21 @@ pub struct VkController {
     swapchain_image_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<ImageView>,
-    render_pass: vk::RenderPass,
-    pipeline_layout: vk::PipelineLayout,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    graphics_pipeline: vk::Pipeline,
+    // render_pass: vk::RenderPass,
+    // pipeline_layout: vk::PipelineLayout,
+    // descriptor_set_layout: vk::DescriptorSetLayout,
+    // graphics_pipeline: vk::Pipeline,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
-    command_buffers: Vec<vk::CommandBuffer>,
+    command_buffers: Vec<Vec<vk::CommandBuffer>>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
-    vertices: Vec<SimpleVertex>,
-    indices: Vec<u32>,
-    vertex_allocation: Option<AllocationInfo>,
-    index_allocation: Option<AllocationInfo>,
+    // vertices: Vec<SimpleVertex>,
+    // indices: Vec<u32>,
+    // vertex_allocation: Option<AllocationInfo>,
+    // index_allocation: Option<AllocationInfo>,
+    objects_to_render: Vec<(PipelineConfig, Box<dyn Renderable>)>,
     uniform_allocation: Option<AllocationInfo>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
@@ -126,13 +126,13 @@ impl VkController {
         
         let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format, &mut allocator );
         
-        let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples, &mut allocator );
+        // let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples, &mut allocator );
         
         let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
         
         let obj = Arc::new(SimpleRenderableObject {
-            vertices: vertices.clone(),
-            indices: indices.clone(),
+            vertices,
+            indices,
             uniform_buffer: Arc::new(UniformBufferResource { buffer: UniformBufferObject {
                     model: glm::identity(),
                     view: glm::identity(),
@@ -159,49 +159,22 @@ impl VkController {
         let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
         let object_to_render = ObjectToRender::new(obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &mut allocator).unwrap();
 
-        // Make the pipeline config here
-        // let pipeline_config = PipelineConfig::new(
-        //     vec![
-        //         ShaderInfo {
-        //             path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
-        //             shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-        //             entry_point: CString::new("main").unwrap(),
-        //         },
-        //         ShaderInfo {
-        //             path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
-        //             shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-        //             entry_point: CString::new("main").unwrap(),
-        //         }
-        //     ],
-        //     vertices.first().unwrap().get_input_binding_description(),
-        //     vertices.first().unwrap().get_attribute_descriptions(),
-        //     vec![Arc::new(UniformBufferResource { buffer: UniformBufferObject {
-        //             model: glm::identity(),
-        //             view: glm::identity(),
-        //             proj: glm::identity(),
-        //         }, binding: 0 }),
-        //         Arc::new(SimpleObjectTextureResource {
-        //             path: std::path::PathBuf::from("./assets/textures/viking_room.png"),
-        //             binding: 1,
-        //     })],
-        //     msaa_samples,
-        //     swapchain_image_format,
-        //     Self::find_depth_format(&instance, &physical_device),
-        // ).unwrap();
-
-        let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
+        // let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
         
-        let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
+        // let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
 
-        let mut pipeline_manager = PipelineManager::new();
+        let mut pipeline_manager = PipelineManager::new(&device, swapchain_image_format, msaa_samples, Self::find_depth_format(&instance, &physical_device), &mut allocator);
 
-        let graphics_pipeline = pipeline_manager.get_or_create_pipeline(object_to_render.get_pipeline_config(), &device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
+        // let graphics_pipeline = pipeline_manager.get_or_create_pipeline(&object_to_render.get_pipeline_config(), &device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
+
+        let mut objects_to_render: Vec<(PipelineConfig, Box<dyn Renderable>)> = Vec::new();
+        objects_to_render.push((object_to_render.get_pipeline_config(), Box::new(object_to_render)));
 
         let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
         
         let depth_image_allocation = Self::create_depth_resources(&instance, &physical_device, &swapchain_extent, msaa_samples, &mut allocator );
         
-        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
+        let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
         
         let mut texture_image_allocation = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
         let mip_levels = texture_image_allocation.get_mip_levels().unwrap();
@@ -210,9 +183,9 @@ impl VkController {
         
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
 
-        let vertex_allocation = Self::create_vertex_buffer(&command_pool, &graphics_queue, &vertices, &mut allocator );
+        // let vertex_allocation = Self::create_vertex_buffer(&command_pool, &graphics_queue, &vertices, &mut allocator );
 
-        let index_allocation = Self::create_index_buffer(&command_pool, &graphics_queue, &indices, &mut allocator );
+        // let index_allocation = Self::create_index_buffer(&command_pool, &graphics_queue, &indices, &mut allocator );
 
         let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
         
@@ -220,10 +193,13 @@ impl VkController {
         
         let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_allocation, &descriptor_set_layout, &texture_image_allocation, &texture_sampler);
         
-        let command_buffers = Self::create_command_buffers(&device, &command_pool);
+        let mut command_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            command_buffers.push(Self::create_command_buffers(&device, &command_pool, objects_to_render.len() as u32));
+        }
         
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device, &mut allocator );
-        
+
         Self {
             window,
             entry,
@@ -240,18 +216,17 @@ impl VkController {
             swapchain_image_format,
             swapchain_extent,
             swapchain_image_views,
-            pipeline_layout,
-            render_pass,
-            descriptor_set_layout,
-            graphics_pipeline,
+            // pipeline_layout,
+            // render_pass,
+            // descriptor_set_layout,
+            // graphics_pipeline,
             swapchain_framebuffers,
             command_pool,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-            vertex_allocation: Some(vertex_allocation),
-            index_allocation: Some(index_allocation),
+            objects_to_render,
             uniform_allocation: Some(uniform_allocation),
             current_frame: 0,
             frame_buffer_resized: false,
@@ -263,8 +238,6 @@ impl VkController {
             texture_sampler,
             color_image_allocation: Some(color_image_allocation),
             depth_image_allocation: Some(depth_image_allocation),
-            vertices,
-            indices,
             mip_levels,
             msaa_samples,
             allocator,
@@ -540,17 +513,21 @@ impl VkController {
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
-            self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, Some(&self.allocator.get_allocation_callbacks()));
 
-            self.device.destroy_pipeline(self.graphics_pipeline, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_pipeline_layout(self.pipeline_layout, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_render_pass(self.render_pass, Some(&self.allocator.get_allocation_callbacks()));
-            
-            self.allocator.free_memory_allocation(self.index_allocation.take().unwrap()).unwrap();
-            self.index_allocation = None;
+            // self.device.destroy_pipeline(self.graphics_pipeline, Some(&self.allocator.get_allocation_callbacks()));
+            self.graphics_pipeline_manager.destroy(&self.device, &mut self.allocator);
+            // self.device.destroy_pipeline_layout(self.pipeline_layout, Some(&self.allocator.get_allocation_callbacks()));
+            // self.device.destroy_render_pass(self.render_pass, Some(&self.allocator.get_allocation_callbacks()));
 
-            self.allocator.free_memory_allocation(self.vertex_allocation.take().unwrap()).unwrap();
-            self.vertex_allocation = None;
+            for i in (0..self.objects_to_render.len()).rev() {
+                let mut otr = self.objects_to_render.remove(i);
+                self.allocator.free_memory_allocation(otr.1.take_index_allocation()).unwrap();
+                self.allocator.free_memory_allocation(otr.1.take_vertex_allocation()).unwrap();
+                for (_, allocation) in otr.1.get_extra_resource_allocations() {
+                    self.allocator.free_memory_allocation(allocation).unwrap();
+                }
+            }
 
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
                 self.device.destroy_semaphore(self.render_finished_semaphores[i], Some(&self.allocator.get_allocation_callbacks()));
@@ -712,7 +689,7 @@ impl VkController {
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
         self.color_image_allocation = Some(Self::create_color_resources(self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
         self.depth_image_allocation = Some(Self::create_depth_resources(&self.instance, &self.physical_device, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
-        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, self.depth_image_allocation.as_ref().unwrap(), self.color_image_allocation.as_ref().unwrap(), &mut self.allocator);
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.graphics_pipeline_manager.get_render_pass().unwrap(), &self.swapchain_image_views, &self.swapchain_extent, self.depth_image_allocation.as_ref().unwrap(), self.color_image_allocation.as_ref().unwrap(), &mut self.allocator);
     }
 
     fn cleanup_swapchain(&mut self) {
@@ -959,93 +936,93 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_render_pass(swapchain_image_format: vk::Format, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> vk::RenderPass {
-        let color_attachment = vk::AttachmentDescription {
-            format: swapchain_image_format,
-            samples: msaa_samples,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::STORE,
-            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-            initial_layout: vk::ImageLayout::UNDEFINED,
-            final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            ..Default::default()
-        };
+    // fn create_render_pass(swapchain_image_format: vk::Format, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> vk::RenderPass {
+    //     let color_attachment = vk::AttachmentDescription {
+    //         format: swapchain_image_format,
+    //         samples: msaa_samples,
+    //         load_op: vk::AttachmentLoadOp::CLEAR,
+    //         store_op: vk::AttachmentStoreOp::STORE,
+    //         stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+    //         stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+    //         initial_layout: vk::ImageLayout::UNDEFINED,
+    //         final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+    //         ..Default::default()
+    //     };
 
-        let color_attachment_ref = vk::AttachmentReference {
-            attachment: 0,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        };
+    //     let color_attachment_ref = vk::AttachmentReference {
+    //         attachment: 0,
+    //         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+    //     };
 
-        let depth_attachment = vk::AttachmentDescription {
-            format: Self::find_depth_format(instance, physical_device),
-            samples: msaa_samples,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::DONT_CARE,
-            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-            initial_layout: vk::ImageLayout::UNDEFINED,
-            final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            ..Default::default()
-        };
+    //     let depth_attachment = vk::AttachmentDescription {
+    //         format: Self::find_depth_format(instance, physical_device),
+    //         samples: msaa_samples,
+    //         load_op: vk::AttachmentLoadOp::CLEAR,
+    //         store_op: vk::AttachmentStoreOp::DONT_CARE,
+    //         stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+    //         stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+    //         initial_layout: vk::ImageLayout::UNDEFINED,
+    //         final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    //         ..Default::default()
+    //     };
 
-        let depth_attachment_ref = vk::AttachmentReference {
-            attachment: 1,
-            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
+    //     let depth_attachment_ref = vk::AttachmentReference {
+    //         attachment: 1,
+    //         layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    //     };
 
-        let color_attachment_resolve = vk::AttachmentDescription {
-            format: swapchain_image_format,
-            samples: vk::SampleCountFlags::TYPE_1,
-            load_op: vk::AttachmentLoadOp::DONT_CARE,
-            store_op: vk::AttachmentStoreOp::STORE,
-            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-            initial_layout: vk::ImageLayout::UNDEFINED,
-            final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-            ..Default::default()
-        };
+    //     let color_attachment_resolve = vk::AttachmentDescription {
+    //         format: swapchain_image_format,
+    //         samples: vk::SampleCountFlags::TYPE_1,
+    //         load_op: vk::AttachmentLoadOp::DONT_CARE,
+    //         store_op: vk::AttachmentStoreOp::STORE,
+    //         stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
+    //         stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
+    //         initial_layout: vk::ImageLayout::UNDEFINED,
+    //         final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+    //         ..Default::default()
+    //     };
 
-        let color_attachment_resolve_ref = vk::AttachmentReference {
-            attachment: 2,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        };
+    //     let color_attachment_resolve_ref = vk::AttachmentReference {
+    //         attachment: 2,
+    //         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+    //     };
 
-        let subpass = vk::SubpassDescription {
-            pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
-            color_attachment_count: 1,
-            p_color_attachments: &color_attachment_ref,
-            p_depth_stencil_attachment: &depth_attachment_ref,
-            p_resolve_attachments: &color_attachment_resolve_ref,
-            ..Default::default()
-        };
+    //     let subpass = vk::SubpassDescription {
+    //         pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
+    //         color_attachment_count: 1,
+    //         p_color_attachments: &color_attachment_ref,
+    //         p_depth_stencil_attachment: &depth_attachment_ref,
+    //         p_resolve_attachments: &color_attachment_resolve_ref,
+    //         ..Default::default()
+    //     };
 
-        let dependency = vk::SubpassDependency {
-            src_subpass: vk::SUBPASS_EXTERNAL,
-            dst_subpass: 0,
-            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            src_access_mask: vk::AccessFlags::empty(),
-            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            ..Default::default()
-        };
+    //     let dependency = vk::SubpassDependency {
+    //         src_subpass: vk::SUBPASS_EXTERNAL,
+    //         dst_subpass: 0,
+    //         src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+    //         src_access_mask: vk::AccessFlags::empty(),
+    //         dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+    //         dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+    //         ..Default::default()
+    //     };
 
-        let attachments = [color_attachment, depth_attachment, color_attachment_resolve];
-        let render_pass_info = vk::RenderPassCreateInfo {
-            s_type: StructureType::RENDER_PASS_CREATE_INFO,
-            attachment_count: attachments.len() as u32,
-            p_attachments: attachments.as_ptr(),
-            subpass_count: 1,
-            p_subpasses: &subpass,
-            dependency_count: 1,
-            p_dependencies: &dependency,
-            ..Default::default()
-        };
+    //     let attachments = [color_attachment, depth_attachment, color_attachment_resolve];
+    //     let render_pass_info = vk::RenderPassCreateInfo {
+    //         s_type: StructureType::RENDER_PASS_CREATE_INFO,
+    //         attachment_count: attachments.len() as u32,
+    //         p_attachments: attachments.as_ptr(),
+    //         subpass_count: 1,
+    //         p_subpasses: &subpass,
+    //         dependency_count: 1,
+    //         p_dependencies: &dependency,
+    //         ..Default::default()
+    //     };
 
-        unsafe {
-            device.create_render_pass(&render_pass_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
-    }
+    //     unsafe {
+    //         device.create_render_pass(&render_pass_info, Some(&allocator.get_allocation_callbacks()))
+    //     }.unwrap()
+    // }
 
     fn get_viewport(swapchain_extent: &vk::Extent2D) -> vk::Viewport {
         vk::Viewport {
@@ -1107,13 +1084,12 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool) -> Vec<vk::CommandBuffer> {
-
+    fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool, num_buffers: u32) -> Vec<vk::CommandBuffer> {
         let alloc_info = vk::CommandBufferAllocateInfo {
             s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
             command_pool: *command_pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            command_buffer_count: num_buffers, //Self::MAX_FRAMES_IN_FLIGHT as u32,
             ..Default::default()
         };
 
@@ -1168,7 +1144,7 @@ impl VkController {
 
         let vertex_buffers = [vertex_allocation.get_buffer().unwrap()];
         let offsets = [0_u64];
-
+        
         unsafe {
             device.cmd_begin_render_pass(*command_buffer, &render_pass_info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *graphics_pipeline);
@@ -1204,32 +1180,42 @@ impl VkController {
             },
             Err(error) => panic!("Failed to acquire next image: {:?}", error),
         };
-
-        self.update_uniform_buffer(self.current_frame);
-
+        
+        self.update_uniform_buffer(self.current_frame); // TODO: Update uniform buffers not just the one but every single one in the objects to render list.
+        
         unsafe {
             self.device.reset_fences(&[self.in_flight_fences[self.current_frame]]).unwrap();
         }
-
-        unsafe {
-            self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
+        
+        // TODO: Check if there are enough command buffers for the objects to render list for the current frame
+        if self.objects_to_render.len() != self.command_buffers[self.current_frame].len() {
+            unsafe {
+                self.device.free_command_buffers(self.command_pool, &self.command_buffers[self.current_frame]);
+            }
+            self.command_buffers[self.current_frame] = Self::create_command_buffers(&self.device, &self.command_pool, self.objects_to_render.len() as u32);
         }
 
-        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, self.vertex_allocation.as_ref().unwrap(), self.index_allocation.as_ref().unwrap(), &self.pipeline_layout, &self.descriptor_sets, self.current_frame, &self.indices);
-
+        for (i, otr) in self.objects_to_render.iter_mut().enumerate() {
+            let cmd_buffer = self.command_buffers[self.current_frame][i];
+            unsafe {
+                self.device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty()).unwrap();
+            }
+            
+            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap(), &otr.1.borrow_vertex_allocation().unwrap(), &otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), &self.descriptor_sets, self.current_frame, &[(otr.1.get_num_indecies() as u32)]);
+        }
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
-
-        let command_buffers = [self.command_buffers[self.current_frame]];
+        
+        // let command_buffers = [];
 
         let submit_info = vk::SubmitInfo {
             s_type: StructureType::SUBMIT_INFO,
             wait_semaphore_count: wait_semaphores.len() as u32,
             p_wait_semaphores: wait_semaphores.as_ptr(),
             p_wait_dst_stage_mask: wait_stages.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: command_buffers.as_ptr(),
+            command_buffer_count: self.command_buffers[self.current_frame].len() as u32,
+            p_command_buffers: self.command_buffers[self.current_frame].as_ptr(),
             signal_semaphore_count: 1,
             p_signal_semaphores: signal_semaphores.as_ptr(),
             ..Default::default()
@@ -1238,6 +1224,7 @@ impl VkController {
         unsafe {
             self.device.queue_submit(self.graphics_queue, &[submit_info], self.in_flight_fences[self.current_frame]).unwrap();
         }
+
 
         let swapchains = [self.swapchain];
 
@@ -1693,6 +1680,10 @@ impl VkController {
             }
         }
         Err(Cow::from("Failed to find suitable memory type!"))
+    }
+
+    pub fn add_object_to_render(&mut self, object_to_render: Box<dyn Renderable>) {
+        self.objects_to_render.push((object_to_render.get_pipeline_config(), object_to_render));
     }
 }
 

@@ -1,6 +1,6 @@
 use std::{borrow::Cow, ffi::CString, fs::read_to_string, sync::Arc};
 
-use ash::{vk::{self, StructureType, VertexInputAttributeDescription, VertexInputBindingDescription}, Device};
+use ash::{vk::{self, RenderPass, SampleCountFlags, StructureType, VertexInputAttributeDescription, VertexInputBindingDescription}, Device};
 use image::DynamicImage;
 use shaderc::{Compiler, ShaderKind};
 
@@ -37,6 +37,8 @@ pub struct PipelineConfig {
     msaa_samples: vk::SampleCountFlags,
     swapchain_format: vk::Format,
     depth_format: vk::Format,
+    descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    pipeline_layout: Option<vk::PipelineLayout>,
 }
 
 impl PipelineConfig {
@@ -73,10 +75,12 @@ impl PipelineConfig {
             msaa_samples,
             swapchain_format,
             depth_format,
+            descriptor_set_layout: None,
+            pipeline_layout: None,
         })
     }
 
-    fn create_graphics_pipeline(&self, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
+    fn create_graphics_pipeline(&mut self, device: &Device, swapchain_extent: &vk::Extent2D, render_pass: RenderPass, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
         for shader in self.shaders.iter() {
             if !(shader.shader_stage_flag == vk::ShaderStageFlags::VERTEX ||
                 shader.shader_stage_flag == vk::ShaderStageFlags::FRAGMENT)  
@@ -85,7 +89,7 @@ impl PipelineConfig {
              };   
         }
 
-        let shader_modules: Vec<(&ShaderInfo, vk::ShaderModule)> = self.shaders.iter().map(|shader_info| {
+        let shader_modules: Vec<(ShaderInfo, vk::ShaderModule)> = self.shaders.iter().map(|shader_info| {
             let shader_kind = match shader_info.shader_stage_flag {
                 vk::ShaderStageFlags::VERTEX => ShaderKind::Vertex,
                 vk::ShaderStageFlags::FRAGMENT => ShaderKind::Fragment,
@@ -93,7 +97,7 @@ impl PipelineConfig {
             };
             let code = Self::compile_shader(&shader_info.path, &shader_info.entry_point.to_str().unwrap(), shader_kind, &shader_info.path.to_string_lossy());
             let module = Self::create_shader_module(device, code, allocator);
-            (shader_info, module)
+            (shader_info.clone(), module)
         }).collect::<Vec<_>>();
 
         let shader_stage_create_infos: Vec<vk::PipelineShaderStageCreateInfo> = shader_modules.iter().map(|(shader_info, shader_module)| {
@@ -207,10 +211,10 @@ impl PipelineConfig {
             ..Default::default()
         };
 
-        let descriptor_set_layout = self.create_descriptor_set_layout(device, allocator);
-        let pipeline_layout = Self::create_pipeline_layout(device, &descriptor_set_layout, allocator);
+        let descriptor_set_layout = self.get_or_create_descriptor_set_layout(device, allocator);
+        let pipeline_layout = self.get_or_create_pipeline_layout(device, &descriptor_set_layout, allocator);
 
-        let render_pass = self.create_render_pass(device, allocator);
+        // let render_pass = self.create_render_pass(device, allocator);
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo {
             s_type: StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
@@ -285,7 +289,11 @@ impl PipelineConfig {
         }
     }
 
-    fn create_pipeline_layout(device: &Device, descriptor_set_layout: &vk::DescriptorSetLayout, allocator: &mut VkAllocator) -> vk::PipelineLayout {
+    fn get_or_create_pipeline_layout(&mut self, device: &Device, descriptor_set_layout: &vk::DescriptorSetLayout, allocator: &mut VkAllocator) -> vk::PipelineLayout {
+        if self.pipeline_layout.is_some() {
+            return self.pipeline_layout.unwrap();
+        }
+
         let descriptor_set_layouts = [*descriptor_set_layout];
         let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
             s_type: StructureType::PIPELINE_LAYOUT_CREATE_INFO,
@@ -296,12 +304,17 @@ impl PipelineConfig {
             ..Default::default()
         };
 
-        unsafe {
+        self.pipeline_layout = Some(unsafe {
             device.create_pipeline_layout(&pipeline_layout_create_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
+        }.unwrap());
+        self.pipeline_layout.unwrap()
     }
 
-    fn create_descriptor_set_layout(&self, device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
+    fn get_or_create_descriptor_set_layout(&mut self, device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
+        if self.descriptor_set_layout.is_some(){
+            return self.descriptor_set_layout.unwrap();
+        }
+        
         let layout_bindings = self.descriptor_set_layout_bindings.clone();
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo {
@@ -311,15 +324,82 @@ impl PipelineConfig {
             ..Default::default()
         };
 
-        unsafe {
+        self.descriptor_set_layout = Some(unsafe {
             device.create_descriptor_set_layout(&layout_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
+        }.unwrap());
+        self.descriptor_set_layout.unwrap()
     }
 
-    fn create_render_pass(&self, device: &Device, allocator: &mut VkAllocator) -> vk::RenderPass {
+    pub fn get_descriptor_set_layout(&self) -> Option<vk::DescriptorSetLayout> {
+        self.descriptor_set_layout
+    }
+
+    pub fn get_pipeline_layout(&self) -> Option<vk::PipelineLayout> {
+        self.pipeline_layout
+    }
+}
+
+impl Eq for PipelineConfig {}
+
+impl PartialEq for PipelineConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.shaders == other.shaders &&
+        self.vertex_binding_info.binding == other.vertex_binding_info.binding &&
+        self.vertex_binding_info.stride == other.vertex_binding_info.stride &&
+        self.vertex_binding_info.input_rate == other.vertex_binding_info.input_rate &&
+        self.vertex_attribute_info.iter().all(|attribute| other.vertex_attribute_info.iter().any(|other_attribute| attribute.binding == other_attribute.binding && attribute.location == other_attribute.location && attribute.format == other_attribute.format && attribute.offset == other_attribute.offset)) &&
+        self.descriptor_set_layout_bindings.iter().all(|binding| other.descriptor_set_layout_bindings.iter().any(|other_binding| binding.binding == other_binding.binding && binding.descriptor_type == other_binding.descriptor_type && binding.descriptor_count == other_binding.descriptor_count && binding.stage_flags == other_binding.stage_flags)) &&
+        self.msaa_samples == other.msaa_samples &&
+        self.swapchain_format == other.swapchain_format &&
+        self.depth_format == other.depth_format
+    }
+}
+
+pub struct PipelineManager {
+    graphics_pipelines: Vec<(PipelineConfig, vk::Pipeline)>,
+    render_pass: Option<vk::RenderPass>,
+}
+
+impl PipelineManager {
+    pub fn new(device: &Device, swapchain_format: vk::Format, msaa_samples: SampleCountFlags, depth_format: vk::Format, allocator: &mut VkAllocator) -> Self {
+        PipelineManager {
+            graphics_pipelines: Vec::new(),
+            render_pass: Some(Self::create_render_pass(device, swapchain_format, msaa_samples, depth_format, allocator)),
+        }
+    }
+
+    pub fn get_or_create_pipeline(&mut self, pipeline_config: &mut PipelineConfig, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
+        if let Some((_, pipeline)) = self.graphics_pipelines.iter().find(|(config, _)| config == pipeline_config) {
+            Ok(*pipeline)
+        } else {
+            let pipeline = pipeline_config.create_graphics_pipeline(device, swapchain_extent, self.render_pass.unwrap(), allocator)?;
+            self.graphics_pipelines.push((pipeline_config.clone(), pipeline));
+            Ok(pipeline)
+        }
+    }
+
+    pub fn destroy(&mut self, device: &Device, allocator: &mut VkAllocator) {
+        for (config, pipeline) in self.graphics_pipelines.iter() {
+            unsafe {
+                device.destroy_pipeline(*pipeline, Some(&allocator.get_allocation_callbacks()));
+                device.destroy_pipeline_layout(config.pipeline_layout.unwrap(), Some(&allocator.get_allocation_callbacks()));
+                device.destroy_descriptor_set_layout(config.descriptor_set_layout.unwrap(), Some(&allocator.get_allocation_callbacks()));
+            }
+        }
+        unsafe {
+            device.destroy_render_pass(self.render_pass.unwrap(), Some(&allocator.get_allocation_callbacks()));
+        }
+        self.graphics_pipelines.clear();
+    }
+
+    pub fn get_render_pass(&self) -> Option<vk::RenderPass> {
+        self.render_pass
+    }
+
+    fn create_render_pass(device: &Device, swapchain_format: vk::Format, msaa_samples: SampleCountFlags, depth_format: vk::Format, allocator: &mut VkAllocator) -> vk::RenderPass {
         let color_attachment = vk::AttachmentDescription {
-            format: self.swapchain_format,
-            samples: self.msaa_samples,
+            format: swapchain_format,
+            samples: msaa_samples,
             load_op: vk::AttachmentLoadOp::CLEAR,
             store_op: vk::AttachmentStoreOp::STORE,
             stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
@@ -335,8 +415,8 @@ impl PipelineConfig {
         };
 
         let depth_attachment = vk::AttachmentDescription {
-            format: self.depth_format,
-            samples: self.msaa_samples,
+            format: depth_format,
+            samples: msaa_samples,
             load_op: vk::AttachmentLoadOp::CLEAR,
             store_op: vk::AttachmentStoreOp::DONT_CARE,
             stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
@@ -352,7 +432,7 @@ impl PipelineConfig {
         };
 
         let color_attachment_resolve = vk::AttachmentDescription {
-            format: self.swapchain_format,
+            format: swapchain_format,
             samples: vk::SampleCountFlags::TYPE_1,
             load_op: vk::AttachmentLoadOp::DONT_CARE,
             store_op: vk::AttachmentStoreOp::STORE,
@@ -402,43 +482,5 @@ impl PipelineConfig {
         unsafe {
             device.create_render_pass(&render_pass_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
-    }
-}
-
-impl Eq for PipelineConfig {}
-
-impl PartialEq for PipelineConfig {
-    fn eq(&self, other: &Self) -> bool {
-        self.shaders == other.shaders &&
-        self.vertex_binding_info.binding == other.vertex_binding_info.binding &&
-        self.vertex_binding_info.stride == other.vertex_binding_info.stride &&
-        self.vertex_binding_info.input_rate == other.vertex_binding_info.input_rate &&
-        self.vertex_attribute_info.iter().all(|attribute| other.vertex_attribute_info.iter().any(|other_attribute| attribute.binding == other_attribute.binding && attribute.location == other_attribute.location && attribute.format == other_attribute.format && attribute.offset == other_attribute.offset)) &&
-        self.descriptor_set_layout_bindings.iter().all(|binding| other.descriptor_set_layout_bindings.iter().any(|other_binding| binding.binding == other_binding.binding && binding.descriptor_type == other_binding.descriptor_type && binding.descriptor_count == other_binding.descriptor_count && binding.stage_flags == other_binding.stage_flags)) &&
-        self.msaa_samples == other.msaa_samples &&
-        self.swapchain_format == other.swapchain_format &&
-        self.depth_format == other.depth_format
-    }
-}
-
-pub struct PipelineManager {
-    graphics_pipelines: Vec<(PipelineConfig, vk::Pipeline)>,
-}
-
-impl PipelineManager {
-    pub fn new() -> Self {
-        PipelineManager {
-            graphics_pipelines: Vec::new(),
-        }
-    }
-
-    pub fn get_or_create_pipeline(&mut self, pipeline_config: PipelineConfig, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
-        if let Some((config, pipeline)) = self.graphics_pipelines.iter().find(|(config, _)| *config == pipeline_config) {
-            Ok(*pipeline)
-        } else {
-            let pipeline = pipeline_config.create_graphics_pipeline(device, swapchain_extent, allocator)?;
-            self.graphics_pipelines.push((pipeline_config, pipeline));
-            Ok(pipeline)
-        }
     }
 }

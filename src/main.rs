@@ -59,7 +59,7 @@ fn main() {
         if close {
             return;
         }
-
+        
         vk_controller.draw_frame();
         frame_count += 1;
         if last_fps_print.elapsed().as_secs_f32() > 1.0 {

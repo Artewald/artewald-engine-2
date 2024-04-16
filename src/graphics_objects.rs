@@ -118,13 +118,24 @@ pub trait GraphicsObject<T: Vertex> {
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
 }
 
+pub trait Renderable {
+    fn take_vertex_allocation(&mut self) -> AllocationInfo;
+    fn take_index_allocation(&mut self) -> AllocationInfo;
+    fn borrow_vertex_allocation(&self) -> Option<&AllocationInfo>;
+    fn borrow_index_allocation(&self) -> Option<&AllocationInfo>;
+    fn get_num_indecies(&self) -> usize;
+    fn get_extra_resource_allocations(&self) -> Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo)>;
+    fn get_pipeline_config(&self) -> PipelineConfig;
+}
+
 pub struct ObjectToRender<T: Vertex> {
-    vertex_allocation: AllocationInfo,
-    index_allocation: AllocationInfo,
+    vertex_allocation: Option<AllocationInfo>,
+    index_allocation: Option<AllocationInfo>,
     extra_resource_allocations: Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo)>,
     pipeline_config: PipelineConfig,
     original_object: Arc<dyn GraphicsObject<T>>,
 }
+
 
 impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
     pub fn new(original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
@@ -190,8 +201,8 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
         )?;
 
         Ok(Self {
-            vertex_allocation,
-            index_allocation,
+            vertex_allocation: Some(vertex_allocation),
+            index_allocation: Some(index_allocation),
             extra_resource_allocations,
             pipeline_config,
             original_object,
@@ -202,5 +213,35 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 
     pub fn get_pipeline_config(&self) -> PipelineConfig {
         self.pipeline_config.clone()
+    }
+}
+
+impl<T: Vertex> Renderable for ObjectToRender<T> {
+    fn take_vertex_allocation(&mut self) -> AllocationInfo {
+        self.vertex_allocation.take().unwrap()
+    }
+
+    fn take_index_allocation(&mut self) -> AllocationInfo {
+        self.index_allocation.take().unwrap()
+    }
+
+    fn get_extra_resource_allocations(&self) -> Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo)> {
+        self.extra_resource_allocations.clone()
+    }
+
+    fn get_pipeline_config(&self) -> PipelineConfig {
+        self.pipeline_config.clone()
+    }
+    
+    fn get_num_indecies(&self) -> usize {
+        self.original_object.get_indices().len()
+    }
+    
+    fn borrow_vertex_allocation(&self) -> Option<&AllocationInfo> {
+        self.vertex_allocation.as_ref()
+    }
+    
+    fn borrow_index_allocation(&self) -> Option<&AllocationInfo> {
+        self.index_allocation.as_ref()
     }
 }
