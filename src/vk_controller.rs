@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{ObjectToRender, Renderable, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{self, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{ObjectToRender, Renderable, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, PipelineManager, ShaderInfo, Vertex}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 
 

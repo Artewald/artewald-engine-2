@@ -37,12 +37,13 @@ pub struct PipelineConfig {
     msaa_samples: vk::SampleCountFlags,
     swapchain_format: vk::Format,
     depth_format: vk::Format,
-    descriptor_set_layout: Option<vk::DescriptorSetLayout>,
+    descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline_layout: Option<vk::PipelineLayout>,
+    descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 impl PipelineConfig {
-    pub fn new(shaders: Vec<ShaderInfo>, vertex_binding_info: VertexInputBindingDescription, vertex_attribute_info: Vec<VertexInputAttributeDescription>, resources: Vec<Arc<dyn GraphicsResource>>, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
+    pub fn new(device: &Device, shaders: Vec<ShaderInfo>, vertex_binding_info: VertexInputBindingDescription, vertex_attribute_info: Vec<VertexInputAttributeDescription>, resources: &[Arc<dyn GraphicsResource>], msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format, descriptor_pool: &vk::DescriptorPool, frames_in_flight: u32, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         if vertex_attribute_info.len() == 0 {
             return Err(Cow::Borrowed("Vertex attribute descriptions are empty"));
         }
@@ -67,6 +68,10 @@ impl PipelineConfig {
             descriptor_set_layout_bindings.push(resource_binding);
         }
 
+        let descriptor_set_layout = Self::create_descriptor_set_layout(device, &descriptor_set_layout_bindings, allocator);
+
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, &descriptor_set_layout, resources, frames_in_flight);
+
         Ok(PipelineConfig {
             shaders,
             vertex_binding_info,
@@ -75,8 +80,9 @@ impl PipelineConfig {
             msaa_samples,
             swapchain_format,
             depth_format,
-            descriptor_set_layout: None,
+            descriptor_set_layout,
             pipeline_layout: None,
+            descriptor_sets,
         })
     }
 
@@ -211,8 +217,7 @@ impl PipelineConfig {
             ..Default::default()
         };
 
-        let descriptor_set_layout = self.get_or_create_descriptor_set_layout(device, allocator);
-        let pipeline_layout = self.get_or_create_pipeline_layout(device, &descriptor_set_layout, allocator);
+        let pipeline_layout = self.get_or_create_pipeline_layout(device, &self.descriptor_set_layout, allocator);
 
         // let render_pass = self.create_render_pass(device, allocator);
 
@@ -310,12 +315,8 @@ impl PipelineConfig {
         self.pipeline_layout.unwrap()
     }
 
-    fn get_or_create_descriptor_set_layout(&mut self, device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
-        if self.descriptor_set_layout.is_some(){
-            return self.descriptor_set_layout.unwrap();
-        }
-        
-        let layout_bindings = self.descriptor_set_layout_bindings.clone();
+    fn create_descriptor_set_layout(device: &Device, descriptor_set_layout_bindings: &[vk::DescriptorSetLayoutBinding], allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
+        let layout_bindings = descriptor_set_layout_bindings.clone();
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo {
             s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -324,10 +325,78 @@ impl PipelineConfig {
             ..Default::default()
         };
 
-        self.descriptor_set_layout = Some(unsafe {
+        unsafe {
             device.create_descriptor_set_layout(&layout_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap());
-        self.descriptor_set_layout.unwrap()
+        }.unwrap()
+    }
+
+    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, descriptor_set_layout: &vk::DescriptorSetLayout, resources: &[Arc<dyn GraphicsResource>], frames_in_flight: u32) -> Vec<vk::DescriptorSet> {
+        let layouts = vec![*descriptor_set_layout; frames_in_flight as usize];
+        let alloc_info = vk::DescriptorSetAllocateInfo {
+            s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptor_pool: *descriptor_pool,
+            descriptor_set_count: frames_in_flight,
+            p_set_layouts: layouts.as_ptr(),
+            ..Default::default()
+        };
+
+        let descriptor_sets = unsafe {
+            device.allocate_descriptor_sets(&alloc_info).unwrap()
+        };
+
+        for i in 0..frames_in_flight {
+            for resource in resources {
+                match resource.get_resource() {
+                    GraphicsResourceType::UniformBuffer(buffer) => todo!(),
+                    GraphicsResourceType::Texture(texture) => todo!(),
+                };
+            }
+            
+            let offset = unsafe {uniform_buffer.get_uniform_pointers()[i].offset_from(uniform_buffer.get_uniform_pointers()[0])} as u64;
+            let buffer_info = vk::DescriptorBufferInfo {
+                buffer: uniform_buffer.get_buffer().unwrap(),
+                offset,
+                range: std::mem::size_of::<UniformBufferObject>() as u64,
+            };
+
+            let image_info = vk::DescriptorImageInfo {
+                sampler: *texture_sampler,
+                image_view: texture_allocation.get_image_view().unwrap(),
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            };
+
+            let descriptor_writes = [
+                vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                    dst_set: descriptor_sets[i],
+                    dst_binding: 0,
+                    dst_array_element: 0,
+                    descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                    descriptor_count: 1,
+                    p_buffer_info: &buffer_info,
+                    p_image_info: std::ptr::null(),
+                    p_texel_buffer_view: std::ptr::null(),
+                    ..Default::default()
+                },
+                vk::WriteDescriptorSet {
+                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                    dst_set: descriptor_sets[i],
+                    dst_binding: 1,
+                    dst_array_element: 0,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    descriptor_count: 1,
+                    p_image_info: &image_info,
+                    p_texel_buffer_view: std::ptr::null(),
+                    ..Default::default()
+                }
+            ];
+
+            unsafe {
+                device.update_descriptor_sets(&descriptor_writes, &vec![]);
+            }
+        }
+
+        descriptor_sets
     }
 
     pub fn get_descriptor_set_layout(&self) -> Option<vk::DescriptorSetLayout> {

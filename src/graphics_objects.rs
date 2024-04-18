@@ -194,7 +194,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             original_object.get_shader_infos(),
             vertex_sample.get_input_binding_description(),
             vertex_sample.get_attribute_descriptions(),
-            original_object.get_resources(),
+            original_object.get_resources(), // TODO, dette burde være extra resource allocations
             msaa_samples,
             swapchain_format,
             depth_format,
