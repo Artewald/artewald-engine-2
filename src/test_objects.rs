@@ -1,8 +1,8 @@
-use std::{collections::{hash_map, HashMap}, path::PathBuf, sync::Arc};
-use image::DynamicImage;
+use std::{collections::{hash_map, HashMap}, sync::Arc};
+use ash::{vk::{DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateFlags, DescriptorSetLayoutCreateInfo, StructureType}, Device};
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{GraphicsObject, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::ShaderInfo, vertex::SimpleVertex, vk_allocator::Serializable};
+use crate::{graphics_objects::{GraphicsObject, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{GraphicsResource, GraphicsResourceType, ShaderInfo}, vertex::SimpleVertex, vk_allocator::{Serializable, VkAllocator}};
 
 pub struct SimpleRenderableObject {
     pub vertices: Vec<SimpleVertex>,
@@ -10,6 +10,11 @@ pub struct SimpleRenderableObject {
     pub uniform_buffer: Arc<UniformBufferResource<UniformBufferObject>>,
     pub texture: Arc<TextureResource>,
     pub shaders: Vec<ShaderInfo>,
+    pub descriptor_set_layout: Option<DescriptorSetLayout>,
+}       
+
+impl SimpleRenderableObject {
+
 }
 
 impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
@@ -30,6 +35,24 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
 
     fn get_shader_infos(&self) -> Vec<crate::pipeline_manager::ShaderInfo> {
         self.shaders.clone()
+    }
+    
+    fn get_or_create_descriptor_set_layout(&self, device: &Device, allocator: &mut VkAllocator) -> DescriptorSetLayout {
+        if self.descriptor_set_layout.is_some() {
+            return self.descriptor_set_layout.unwrap();
+        }
+
+        let bindings: Vec<DescriptorSetLayoutBinding> = self.get_resources().iter().map(|resource| resource.get_descriptor_set_layout_binding()).collect();
+        let create_info = DescriptorSetLayoutCreateInfo {
+            flags: DescriptorSetLayoutCreateFlags::empty(),
+            binding_count: bindings.len() as u32,
+            p_bindings: bindings.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe {
+            device.create_descriptor_set_layout(&create_info, Some(&allocator.get_allocation_callbacks()))
+        }.unwrap()
     }
 }
 

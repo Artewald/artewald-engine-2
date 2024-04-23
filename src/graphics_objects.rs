@@ -1,6 +1,6 @@
 use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::Arc};
 
-use ash::vk::{self, CommandPool, Queue};
+use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, Queue, Sampler, StructureType, WriteDescriptorSet}, Device};
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
@@ -116,29 +116,33 @@ pub trait GraphicsObject<T: Vertex> {
     fn get_indices(&self) -> Vec<u32>;
     fn get_resources(&self) -> Vec<Arc<dyn GraphicsResource>>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
+    fn get_or_create_descriptor_set_layout(&self, device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorSetLayout;
 }
 
 pub trait Renderable {
     fn take_vertex_allocation(&mut self) -> AllocationInfo;
     fn take_index_allocation(&mut self) -> AllocationInfo;
+    fn take_extra_resource_allocations(&mut self) -> Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType)>;
     fn borrow_vertex_allocation(&self) -> Option<&AllocationInfo>;
     fn borrow_index_allocation(&self) -> Option<&AllocationInfo>;
     fn get_num_indecies(&self) -> usize;
-    fn get_extra_resource_allocations(&self) -> Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo)>;
+    fn borrow_extra_resource_allocations(&self) -> Vec<(vk::DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType)>;
     fn get_pipeline_config(&self) -> PipelineConfig;
+    fn get_or_create_descriptor_set(&self, device: &Device, descriptor_pool: &vk::DescriptorPool, frames_in_flight: u32, allocator: &mut VkAllocator) -> DescriptorSet;
 }
 
 pub struct ObjectToRender<T: Vertex> {
     vertex_allocation: Option<AllocationInfo>,
     index_allocation: Option<AllocationInfo>,
-    extra_resource_allocations: Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo)>,
+    extra_resource_allocations: Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType)>,
     pipeline_config: PipelineConfig,
     original_object: Arc<dyn GraphicsObject<T>>,
+    descriptor_set: Option<DescriptorSet>,
 }
 
 
 impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
-    pub fn new(original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+    pub fn new(device: &Device, original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let vertices = original_object.get_vertices();
         let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertex_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
@@ -169,7 +173,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             return Err(Cow::from(error_str));
                         },
                     };
-                    extra_resource_allocations.push((resource.get_descriptor_set_layout_binding(), allocation));
+                    extra_resource_allocations.push((resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::UNIFORM_BUFFER));
                 }
                 GraphicsResourceType::Texture(image) => {
                     let allocation = match allocator.create_device_local_image(image, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false) {
@@ -180,7 +184,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             return Err(Cow::from(error_str));
                         },
                     };
-                    extra_resource_allocations.push((resource.get_descriptor_set_layout_binding(), allocation));
+                    extra_resource_allocations.push((resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::COMBINED_IMAGE_SAMPLER));
                 }
             }
         }
@@ -194,7 +198,9 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             original_object.get_shader_infos(),
             vertex_sample.get_input_binding_description(),
             vertex_sample.get_attribute_descriptions(),
-            original_object.get_resources(), // TODO, dette burde være extra resource allocations
+            original_object, // TODO, dette burde være extra resource allocations
+            &original_object.get_resources(),
+            original_object.get_or_create_descriptor_set_layout(device, allocator),
             msaa_samples,
             swapchain_format,
             depth_format,
@@ -206,6 +212,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             extra_resource_allocations,
             pipeline_config,
             original_object,
+            descriptor_set: None,
         })
 
         //Err("Not implemented".into())
@@ -213,6 +220,79 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 
     pub fn get_pipeline_config(&self) -> PipelineConfig {
         self.pipeline_config.clone()
+    }
+
+    fn create_descriptor_set(device: &Device, descriptor_pool: &DescriptorPool, texture_sampler: &Sampler, descriptor_set_layout: DescriptorSetLayout, resource_allocations: &[(vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType)], frames_in_flight: u32, allocator: &mut VkAllocator) -> Vec<DescriptorSet> {
+        let layouts = vec![descriptor_set_layout; frames_in_flight as usize];
+        let alloc_info = DescriptorSetAllocateInfo {
+            s_type: StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptor_pool: *descriptor_pool,
+            descriptor_set_count: frames_in_flight,
+            p_set_layouts: layouts.as_ptr(),
+            ..Default::default()
+        };
+
+        let descriptor_sets = unsafe {
+            device.allocate_descriptor_sets(&alloc_info).unwrap()
+        };
+
+        for i in 0..frames_in_flight {
+            let mut descriptor_writes: Vec<WriteDescriptorSet> = Vec::with_capacity(resource_allocations.len());
+            
+            for (_, allocation_info, descriptor_type) in resource_allocations.iter() {
+                let write_descriptor = match *descriptor_type {
+                    DescriptorType::UNIFORM_BUFFER => {
+                        let offset = unsafe {allocation_info.get_uniform_pointers()[i as usize].offset_from(allocation_info.get_uniform_pointers()[0])} as u64;
+                        let buffer_info = DescriptorBufferInfo {
+                            buffer: allocation_info.get_buffer().unwrap(),
+                            offset,
+                            range: std::mem::size_of::<UniformBufferObject>() as u64,
+                        };
+                        vk::WriteDescriptorSet {
+                            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                            dst_set: descriptor_sets[i as usize],
+                            dst_binding: 0,
+                            dst_array_element: 0,
+                            descriptor_type: DescriptorType::UNIFORM_BUFFER,
+                            descriptor_count: 1,
+                            p_buffer_info: &buffer_info,
+                            p_image_info: std::ptr::null(),
+                            p_texel_buffer_view: std::ptr::null(),
+                            ..Default::default()
+                        }
+                    },
+                    DescriptorType::COMBINED_IMAGE_SAMPLER => {
+                        let image_info = DescriptorImageInfo {
+                            sampler: *texture_sampler,
+                            image_view: allocation_info.get_image_view().unwrap(),
+                            image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        };
+                        
+                        vk::WriteDescriptorSet {
+                            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                            dst_set: descriptor_sets[i as usize],
+                            dst_binding: 1,
+                            dst_array_element: 0,
+                            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                            descriptor_count: 1,
+                            p_image_info: &image_info,
+                            p_texel_buffer_view: std::ptr::null(),
+                            ..Default::default()
+                        }
+                    },
+                    _ => {
+                        panic!("Not implemented for descriptor type {:?}", descriptor_type.as_raw());
+                    },
+                };
+                descriptor_writes.push(write_descriptor);
+            }
+
+            unsafe {
+                device.update_descriptor_sets(&descriptor_writes, &vec![]);
+            }
+        }
+
+        descriptor_sets
     }
 }
 
@@ -225,8 +305,8 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
         self.index_allocation.take().unwrap()
     }
 
-    fn get_extra_resource_allocations(&self) -> Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo)> {
-        self.extra_resource_allocations.clone()
+    fn borrow_extra_resource_allocations(&self) -> Vec<(DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType)> {
+        self.extra_resource_allocations.iter().map(|(binding, alloc, descriptor_type)| (*binding, alloc, *descriptor_type)).collect()
     }
 
     fn get_pipeline_config(&self) -> PipelineConfig {
@@ -243,5 +323,13 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
     
     fn borrow_index_allocation(&self) -> Option<&AllocationInfo> {
         self.index_allocation.as_ref()
+    }
+    
+    fn take_extra_resource_allocations(&mut self) -> Vec<(vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType)> {
+        self.extra_resource_allocations.drain(..).collect()
+    }
+    
+    fn get_or_create_descriptor_set(&self, device: &Device, descriptor_pool: &DescriptorPool, frames_in_flight: u32, allocator: &mut VkAllocator) -> DescriptorSet {
+        return self.descriptor_set.unwrap();
     }
 }

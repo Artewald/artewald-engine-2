@@ -524,7 +524,7 @@ impl VkController {
                 let mut otr = self.objects_to_render.remove(i);
                 self.allocator.free_memory_allocation(otr.1.take_index_allocation()).unwrap();
                 self.allocator.free_memory_allocation(otr.1.take_vertex_allocation()).unwrap();
-                for (_, allocation) in otr.1.get_extra_resource_allocations() {
+                for (_, allocation) in otr.1.borrow_extra_resource_allocations() {
                     self.allocator.free_memory_allocation(allocation).unwrap();
                 }
             }
