@@ -84,7 +84,7 @@ struct SwapchainSupportDetails {
 // Instance and device management
 impl VkController {
     const DEVICE_EXTENSIONS: [*const i8; 1] = [Swapchain::name().as_ptr()];
-    const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
 
     pub fn new(window: Window, application_name: &str) -> Self {

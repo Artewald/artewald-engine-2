@@ -1,6 +1,6 @@
 use std::{borrow::Cow, ffi::CString, fs::read_to_string, sync::Arc};
 
-use ash::{vk::{self, DescriptorSetLayout, DescriptorSetLayoutBinding, RenderPass, SampleCountFlags, StructureType, VertexInputAttributeDescription, VertexInputBindingDescription}, Device};
+use ash::{vk::{self, DescriptorSetLayout, DescriptorSetLayoutBinding, RenderPass, SampleCountFlags, Sampler, StructureType, VertexInputAttributeDescription, VertexInputBindingDescription}, Device};
 use image::DynamicImage;
 use shaderc::{Compiler, ShaderKind};
 
@@ -8,7 +8,7 @@ use crate::vk_allocator::{AllocationInfo, Serializable, VkAllocator};
 
 pub enum GraphicsResourceType {
     UniformBuffer(Vec<u8>),
-    Texture(DynamicImage),
+    Texture((DynamicImage, Sampler)),
 }
 
 pub trait Vertex: Serializable {
@@ -39,11 +39,11 @@ pub struct PipelineConfig {
     depth_format: vk::Format,
     descriptor_set_layout: vk::DescriptorSetLayout,
     pipeline_layout: Option<vk::PipelineLayout>,
-    descriptor_sets: Vec<vk::DescriptorSet>,
+    // descriptor_sets: Vec<vk::DescriptorSet>,
 }
 
 impl PipelineConfig {
-    pub fn new(device: &Device, shaders: Vec<ShaderInfo>, vertex_binding_info: VertexInputBindingDescription, vertex_attribute_info: Vec<VertexInputAttributeDescription>, resources: &[Arc<dyn GraphicsResource>], descriptor_set_layout: DescriptorSetLayout, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format, descriptor_pool: &vk::DescriptorPool, frames_in_flight: u32, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+    pub fn new(shaders: Vec<ShaderInfo>, vertex_binding_info: VertexInputBindingDescription, vertex_attribute_info: Vec<VertexInputAttributeDescription>, descriptor_set_layout: DescriptorSetLayout, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
         if vertex_attribute_info.len() == 0 {
             return Err(Cow::Borrowed("Vertex attribute descriptions are empty"));
         }
@@ -70,7 +70,7 @@ impl PipelineConfig {
 
         // let descriptor_set_layout = Self::create_descriptor_set_layout(device, &descriptor_set_layout_bindings, allocator);
 
-        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, &descriptor_set_layout, resources, frames_in_flight);
+        // let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, &descriptor_set_layout, resources, frames_in_flight);
 
         Ok(PipelineConfig {
             shaders,
@@ -82,7 +82,7 @@ impl PipelineConfig {
             depth_format,
             descriptor_set_layout,
             pipeline_layout: None,
-            descriptor_sets,
+            // descriptor_sets,
         })
     }
 
