@@ -1,10 +1,10 @@
 use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::Arc, time::Instant};
 
-use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, Queue, Sampler, StructureType, WriteDescriptorSet}, Device};
+use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
-use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, ShaderInfo, Vertex}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, VkController}};
+use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, VkController}};
 
 macro_rules! free_allocations_add_error_string {
     ($allocator: expr, $allocations: expr, $error_string: expr) => {
@@ -74,7 +74,7 @@ pub struct TextureResource {
     pub image: DynamicImage,
     pub binding: u32,
     pub stage: vk::ShaderStageFlags,
-    pub sampler: Sampler,
+    // pub sampler: Sampler,
 }
 
 impl GraphicsResource for TextureResource {
@@ -89,7 +89,7 @@ impl GraphicsResource for TextureResource {
     }
 
     fn get_resource(&self) -> GraphicsResourceType {
-        GraphicsResourceType::Texture((self.image.clone(), self.sampler.clone()))
+        GraphicsResourceType::Texture(self.image.clone())
     }
 }
 
@@ -112,7 +112,7 @@ impl GraphicsResource for SimpleObjectTextureResource {
     }
 
     fn get_resource(&self) -> GraphicsResourceType {
-        GraphicsResourceType::Texture((image::open(self.path.clone()).unwrap(), self.sampler.clone()))
+        GraphicsResourceType::Texture(image::open(self.path.clone()).unwrap())
     }
 }
 
@@ -134,7 +134,7 @@ pub trait Renderable {
     fn get_pipeline_config(&self) -> PipelineConfig;
     fn borrow_descriptor_sets(&self) -> &[DescriptorSet];
     fn cleanup(&mut self, device: &Device, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
-    fn update_extra_resource_allocations(&mut self, device: &Device, start_time: Instant, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
+    fn update_extra_resource_allocations(&mut self, device: &Device, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
 }
 
 pub struct ObjectToRender<T: Vertex> {
@@ -148,7 +148,7 @@ pub struct ObjectToRender<T: Vertex> {
 
 
 impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
-    pub fn new(device: &Device, original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, mip_levels: u32, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+    pub fn new(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let vertices = original_object.get_vertices();
         let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertex_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
@@ -182,7 +182,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                     extra_resource_allocations.push((id, resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::UNIFORM_BUFFER, None));
                     descriptor_set_layout_bindings.push(resource.get_descriptor_set_layout_binding());
                 }
-                GraphicsResourceType::Texture((image, sampler)) => {
+                GraphicsResourceType::Texture(image) => {
                     let mut allocation = match allocator.create_device_local_image(image, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false) {
                         Ok(alloc) => alloc,
                         Err(e) => {
@@ -191,6 +191,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             return Err(Cow::from(error_str));
                         },
                     };
+                    let mip_levels = allocation.get_mip_levels().unwrap();
                     // The format needs to be the same as the format read in [`VkAllocator::create_device_local_image`]
                     match allocator.create_image_view(&mut allocation, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels) {
                         Ok(_) => (),
@@ -200,7 +201,25 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             return Err(Cow::from(error_str));
                         },
                     }
-
+                    
+                    let sampler_config = SamplerConfig {
+                        s_type: StructureType::SAMPLER_CREATE_INFO,
+                        mag_filter: vk::Filter::LINEAR,
+                        min_filter: vk::Filter::LINEAR,
+                        address_mode_u: vk::SamplerAddressMode::REPEAT,
+                        address_mode_v: vk::SamplerAddressMode::REPEAT,
+                        address_mode_w: vk::SamplerAddressMode::REPEAT,
+                        anisotropy_enable: vk::TRUE,
+                        border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+                        unnormalized_coordinates: vk::FALSE,
+                        compare_enable: vk::FALSE,
+                        compare_op: vk::CompareOp::ALWAYS,
+                        mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                        mip_lod_bias: 0.0,
+                        min_lod: 0.0,
+                        max_lod: allocation.get_mip_levels().unwrap() as f32,
+                    };
+                    let sampler = sampler_manager.get_or_create_sampler(device, instance, physical_device, sampler_config, allocator)?;//Self::create_texture_sampler(device, instance, physical_device, allocation.get_mip_levels().unwrap(), allocator);
                     extra_resource_allocations.push((id, resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::COMBINED_IMAGE_SAMPLER, Some(sampler)));
                     descriptor_set_layout_bindings.push(resource.get_descriptor_set_layout_binding());
                 }
@@ -315,6 +334,35 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 
         descriptor_sets
     }
+
+    // fn create_texture_sampler(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, mip_levels: u32, allocator: &mut VkAllocator) -> vk::Sampler {
+    //     let max_anisotropy = unsafe {
+    //         instance.get_physical_device_properties(*physical_device).limits.max_sampler_anisotropy
+    //     };
+    //     let sampler_info = vk::SamplerCreateInfo {
+    //         s_type: StructureType::SAMPLER_CREATE_INFO,
+    //         mag_filter: vk::Filter::LINEAR,
+    //         min_filter: vk::Filter::LINEAR,
+    //         address_mode_u: vk::SamplerAddressMode::REPEAT,
+    //         address_mode_v: vk::SamplerAddressMode::REPEAT,
+    //         address_mode_w: vk::SamplerAddressMode::REPEAT,
+    //         anisotropy_enable: vk::TRUE,
+    //         max_anisotropy,
+    //         border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+    //         unnormalized_coordinates: vk::FALSE,
+    //         compare_enable: vk::FALSE,
+    //         compare_op: vk::CompareOp::ALWAYS,
+    //         mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+    //         mip_lod_bias: 0.0,
+    //         min_lod: 0.0,
+    //         max_lod: mip_levels as f32,
+    //         ..Default::default()
+    //     };
+
+    //     unsafe {
+    //         device.create_sampler(&sampler_info, Some(&allocator.get_allocation_callbacks())).unwrap()
+    //     }
+    // }
 }
 
 impl<T: Vertex> Renderable for ObjectToRender<T> {
@@ -372,7 +420,7 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
         Ok(())
     }
     
-    fn update_extra_resource_allocations(&mut self, device: &Device, start_time: Instant, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    fn update_extra_resource_allocations(&mut self, device: &Device, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let resources = self.original_object.get_resources();
         
         for (id, _, allocation_info, descriptor_type, _) in self.borrow_extra_resource_allocations() {

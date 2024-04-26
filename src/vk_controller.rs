@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{ObjectToRender, Renderable, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, PipelineManager, ShaderInfo, Vertex}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{ObjectToRender, Renderable, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{self, SamplerManager}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 
 
@@ -53,14 +53,15 @@ pub struct VkController {
     start_time: Instant,
     descriptor_pool: vk::DescriptorPool,
     // descriptor_sets: Vec<vk::DescriptorSet>,
-    mip_levels: u32,
-    texture_image_allocation: Option<AllocationInfo>,
-    texture_sampler: vk::Sampler,
+    // mip_levels: u32,
+    // texture_image_allocation: Option<AllocationInfo>,
+    // texture_sampler: vk::Sampler,
     color_image_allocation: Option<AllocationInfo>,
     depth_image_allocation: Option<AllocationInfo>,
     msaa_samples: vk::SampleCountFlags,
     allocator: VkAllocator,
     graphics_pipeline_manager: PipelineManager,
+    sampler_manager: SamplerManager,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -135,13 +136,13 @@ impl VkController {
         
         let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
 
-        let mut texture_image_allocation = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
-        let mip_levels = texture_image_allocation.get_mip_levels().unwrap();
-        Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
+        // let mut texture_image_allocation = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
+        // let mip_levels = texture_image_allocation.get_mip_levels().unwrap();
+        // Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
         
         let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
         
-        let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
+        // let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
 
         let mut ubo = UniformBufferObject {
             model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
@@ -158,7 +159,7 @@ impl VkController {
                 image: image::open("./assets/images/viking_room.png").unwrap(),
                 binding: 1,
                 stage: vk::ShaderStageFlags::FRAGMENT,
-                sampler: texture_sampler,
+                // sampler: texture_sampler,
             }),
             shaders: vec![
                 ShaderInfo {
@@ -175,7 +176,8 @@ impl VkController {
             descriptor_set_layout: None,
         });
         let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
-        let object_to_render = ObjectToRender::new(&device, obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &descriptor_pool, mip_levels, &mut allocator).unwrap();
+        let mut sampler_manager = SamplerManager::new();
+        let object_to_render = ObjectToRender::new(&device, &instance, &physical_device, obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &descriptor_pool, &mut sampler_manager, &mut allocator).unwrap();
 
         // let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
         
@@ -243,14 +245,15 @@ impl VkController {
             start_time: Instant::now(),
             descriptor_pool,
             // descriptor_sets,
-            texture_image_allocation: Some(texture_image_allocation),
-            texture_sampler,
+            // texture_image_allocation: Some(texture_image_allocation),
+            // texture_sampler,
             color_image_allocation: Some(color_image_allocation),
             depth_image_allocation: Some(depth_image_allocation),
-            mip_levels,
+            // mip_levels,
             msaa_samples,
             allocator,
             graphics_pipeline_manager: pipeline_manager,
+            sampler_manager,
         }
     }
 
@@ -515,8 +518,9 @@ impl VkController {
 
             self.cleanup_swapchain();
 
-            self.device.destroy_sampler(self.texture_sampler, Some(&self.allocator.get_allocation_callbacks()));
-            self.allocator.free_memory_allocation(self.texture_image_allocation.take().unwrap()).unwrap();
+            // self.device.destroy_sampler(self.texture_sampler, Some(&self.allocator.get_allocation_callbacks()));
+            self.sampler_manager.destroy_samplers(&self.device, &mut self.allocator);
+            // self.allocator.free_memory_allocation(self.texture_image_allocation.take().unwrap()).unwrap();
 
             self.allocator.free_memory_allocation(self.uniform_allocation.take().unwrap()).unwrap();
 
@@ -1203,7 +1207,8 @@ impl VkController {
 
         for (i, otr) in self.objects_to_render.iter_mut().enumerate() {
             // TODO: Run update on the objects to render so that potential changes are applied to the extra resource allocations
-            otr.1.update_extra_resource_allocations(&self.device, self.start_time, self.current_frame, &mut self.allocator).unwrap();
+            otr.1.update_extra_resource_allocations(&self.device, self.current_frame, &mut self.allocator).unwrap();
+
             let cmd_buffer = self.command_buffers[self.current_frame][i];
             unsafe {
                 self.device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty()).unwrap();

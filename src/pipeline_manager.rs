@@ -8,7 +8,7 @@ use crate::vk_allocator::{AllocationInfo, Serializable, VkAllocator};
 
 pub enum GraphicsResourceType {
     UniformBuffer(Vec<u8>),
-    Texture((DynamicImage, Sampler)),
+    Texture(DynamicImage),
 }
 
 pub trait Vertex: Serializable {

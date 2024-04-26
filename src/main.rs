@@ -8,6 +8,7 @@ mod vertex;
 mod graphics_objects;
 mod vk_allocator;
 mod pipeline_manager;
+mod sampler_manager;
 mod test_objects;
 
 fn main() {
