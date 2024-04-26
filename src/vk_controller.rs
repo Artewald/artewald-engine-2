@@ -143,14 +143,17 @@ impl VkController {
         
         let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
 
+        let mut ubo = UniformBufferObject {
+            model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        };
+        ubo.proj[(1, 1)] *= -1.0;
+
         let obj = Arc::new(SimpleRenderableObject {
             vertices,
             indices,
-            uniform_buffer: Arc::new(UniformBufferResource { buffer: UniformBufferObject {
-                    model: glm::identity(),
-                    view: glm::identity(),
-                    proj: glm::identity(),
-                }, binding: 0 }),
+            uniform_buffer: Arc::new(UniformBufferResource { buffer: ubo, binding: 0 }),
             texture: Arc::new(TextureResource {
                 image: image::open("./assets/images/viking_room.png").unwrap(),
                 binding: 1,
@@ -1101,7 +1104,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &[vk::DescriptorSet], current_frame: usize, indices: &[u32]) {
+    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &[vk::DescriptorSet], current_frame: usize, num_indices: u32) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -1156,7 +1159,7 @@ impl VkController {
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
             device.cmd_bind_index_buffer(*command_buffer, index_allocation.get_buffer().unwrap(), 0, vk::IndexType::UINT32);
             device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline_layout, 0, &vec![descriptor_sets[current_frame]], &vec![]);
-            device.cmd_draw_indexed(*command_buffer, indices.len() as u32, 1, 0, 0, 0);
+            device.cmd_draw_indexed(*command_buffer, num_indices, 1, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)
         }.unwrap();
@@ -1184,7 +1187,7 @@ impl VkController {
             Err(error) => panic!("Failed to acquire next image: {:?}", error),
         };
         
-        self.update_uniform_buffer(self.current_frame); // TODO: Update uniform buffers not just the one but every single one in the objects to render list.
+        // self.update_uniform_buffer(self.current_frame); // TODO: Update uniform buffers not just the one but every single one in the objects to render list.
         
         unsafe {
             self.device.reset_fences(&[self.in_flight_fences[self.current_frame]]).unwrap();
@@ -1199,12 +1202,14 @@ impl VkController {
         }
 
         for (i, otr) in self.objects_to_render.iter_mut().enumerate() {
+            // TODO: Run update on the objects to render so that potential changes are applied to the extra resource allocations
+            otr.1.update_extra_resource_allocations(&self.device, self.start_time, self.current_frame, &mut self.allocator).unwrap();
             let cmd_buffer = self.command_buffers[self.current_frame][i];
             unsafe {
                 self.device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty()).unwrap();
             }
-            
-            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap(), &otr.1.borrow_vertex_allocation().unwrap(), &otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), otr.1.borrow_descriptor_sets(), self.current_frame, &[(otr.1.get_num_indecies() as u32)]);
+            // println!("Num indecies: {}", otr.1.get_num_indecies());
+            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap(), &otr.1.borrow_vertex_allocation().unwrap(), &otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), otr.1.borrow_descriptor_sets(), self.current_frame, otr.1.get_num_indecies() as u32);
         }
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];

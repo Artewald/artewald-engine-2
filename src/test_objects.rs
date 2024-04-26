@@ -26,14 +26,14 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
         self.indices.clone()
     }
 
-    fn get_resources(&self) -> Vec<std::sync::Arc<dyn crate::pipeline_manager::GraphicsResource>> {
+    fn get_resources(&self) -> Vec<(u32, Arc<(dyn GraphicsResource + 'static)>)> {
         vec![
-            self.uniform_buffer.clone(),
-            self.texture.clone(),
+            (1, self.uniform_buffer.clone()),
+            (2, self.texture.clone()),
         ]
     }
 
-    fn get_shader_infos(&self) -> Vec<crate::pipeline_manager::ShaderInfo> {
+    fn get_shader_infos(&self) -> Vec<ShaderInfo> {
         self.shaders.clone()
     }
     

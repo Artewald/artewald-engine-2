@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::Arc};
+use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::Arc, time::Instant};
 
 use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, Queue, Sampler, StructureType, WriteDescriptorSet}, Device};
 use image::DynamicImage;
@@ -17,7 +17,8 @@ macro_rules! free_allocations_add_error_string {
     };
 }
 
-type ResourceAllocation = (vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType, Option<Sampler>);
+type ResourceAllocation = (ResourceID, vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType, Option<Sampler>);
+pub type ResourceID = u32;
 
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C, align(16))]
@@ -118,7 +119,7 @@ impl GraphicsResource for SimpleObjectTextureResource {
 pub trait GraphicsObject<T: Vertex> {
     fn get_vertices(&self) -> Vec<T>;
     fn get_indices(&self) -> Vec<u32>;
-    fn get_resources(&self) -> Vec<Arc<dyn GraphicsResource>>;
+    fn get_resources(&self) -> Vec<(ResourceID, Arc<dyn GraphicsResource>)>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
 }
 
@@ -129,10 +130,11 @@ pub trait Renderable {
     fn borrow_vertex_allocation(&self) -> Option<&AllocationInfo>;
     fn borrow_index_allocation(&self) -> Option<&AllocationInfo>;
     fn get_num_indecies(&self) -> usize;
-    fn borrow_extra_resource_allocations(&self) -> Vec<(vk::DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)>;
+    fn borrow_extra_resource_allocations(&self) -> Vec<(u32, vk::DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)>;
     fn get_pipeline_config(&self) -> PipelineConfig;
     fn borrow_descriptor_sets(&self) -> &[DescriptorSet];
     fn cleanup(&mut self, device: &Device, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
+    fn update_extra_resource_allocations(&mut self, device: &Device, start_time: Instant, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
 }
 
 pub struct ObjectToRender<T: Vertex> {
@@ -166,7 +168,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
         };
         let mut descriptor_set_layout_bindings: Vec<DescriptorSetLayoutBinding> = Vec::with_capacity(original_object.get_resources().len());
         let mut extra_resource_allocations: Vec<ResourceAllocation> = Vec::with_capacity(original_object.get_resources().len());
-        for resource in original_object.get_resources() {
+        for (id, resource) in original_object.get_resources() {
             match resource.get_resource() {
                 GraphicsResourceType::UniformBuffer(buffer) => {
                     let allocation = match allocator.create_uniform_buffers(buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
@@ -177,7 +179,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             return Err(Cow::from(error_str));
                         },
                     };
-                    extra_resource_allocations.push((resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::UNIFORM_BUFFER, None));
+                    extra_resource_allocations.push((id, resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::UNIFORM_BUFFER, None));
                     descriptor_set_layout_bindings.push(resource.get_descriptor_set_layout_binding());
                 }
                 GraphicsResourceType::Texture((image, sampler)) => {
@@ -199,7 +201,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                         },
                     }
 
-                    extra_resource_allocations.push((resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::COMBINED_IMAGE_SAMPLER, Some(sampler)));
+                    extra_resource_allocations.push((id, resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::COMBINED_IMAGE_SAMPLER, Some(sampler)));
                     descriptor_set_layout_bindings.push(resource.get_descriptor_set_layout_binding());
                 }
             }
@@ -257,7 +259,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
         for i in 0..frames_in_flight {
             let mut descriptor_writes: Vec<WriteDescriptorSet> = Vec::with_capacity(resource_allocations.len());
             
-            for (descriptor_set_layout_binding, allocation_info, descriptor_type, sampler_option) in resource_allocations.iter() {
+            for (_, descriptor_set_layout_binding, allocation_info, descriptor_type, sampler_option) in resource_allocations.iter() {
                 let write_descriptor = match *descriptor_type {
                     DescriptorType::UNIFORM_BUFFER => {
                         // println!("Offset: {}", unsafe{allocation_info.get_uniform_pointers()[i as usize].offset_from(allocation_info.get_uniform_pointers()[0])});
@@ -324,8 +326,8 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
         self.index_allocation.take().unwrap()
     }
 
-    fn borrow_extra_resource_allocations(&self) -> Vec<(DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)> {
-        self.extra_resource_allocations.iter().map(|(binding, alloc, descriptor_type, sampler)| (*binding, alloc, *descriptor_type, *sampler)).collect()
+    fn borrow_extra_resource_allocations(&self) -> Vec<(u32, DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)> {
+        self.extra_resource_allocations.iter().map(|(id, binding, alloc, descriptor_type, sampler)| (*id, *binding, alloc, *descriptor_type, *sampler)).collect()
     }
 
     fn get_pipeline_config(&self) -> PipelineConfig {
@@ -362,11 +364,47 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
 
         allocator.free_memory_allocation(self.take_vertex_allocation())?;
         allocator.free_memory_allocation(self.take_index_allocation())?;
-        for (_, allocation, _, _) in self.take_extra_resource_allocations() {
+        for (_, _, allocation, _, _) in self.take_extra_resource_allocations() {
             allocator.free_memory_allocation(allocation)?;
         }
 
         self.descriptor_sets.clear();
+        Ok(())
+    }
+    
+    fn update_extra_resource_allocations(&mut self, device: &Device, start_time: Instant, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+        let resources = self.original_object.get_resources();
+        
+        for (id, _, allocation_info, descriptor_type, _) in self.borrow_extra_resource_allocations() {
+            match descriptor_type {
+                DescriptorType::UNIFORM_BUFFER => {
+                    // let elapsed = start_time.elapsed().as_secs_f32();
+                    // let mut ubo = UniformBufferObject {
+                    //     model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+                    //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+                    //     proj: glm::perspective(1.7777, 90.0_f32.to_radians(), 0.1, 10.0),
+                    // };
+                    // ubo.proj[(1, 1)] *= -1.0;
+                    let data = resources.iter().find(|(r_id, _)| id == *r_id).unwrap();
+                    let binary_data = match data.1.get_resource() {
+                        GraphicsResourceType::UniformBuffer(buffer) => buffer,
+                        _ => {
+                            return Err("Not implemented resource type for uniform buffer".into());
+                        },
+                    };
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(binary_data.as_ptr() as *const std::ffi::c_void, allocation_info.get_uniform_pointers()[frame_index], binary_data.len());
+                    }
+                },
+                DescriptorType::COMBINED_IMAGE_SAMPLER => {
+                    ()
+                },
+                _ => {
+                    panic!("Not implemented for descriptor type {:?}", descriptor_type.as_raw());
+                },
+            };
+        }
+
         Ok(())
     }
     
