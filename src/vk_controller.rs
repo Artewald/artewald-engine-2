@@ -6,7 +6,7 @@ use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{ObjectToRender, Renderable, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{self, SamplerManager}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{GraphicsObject, ObjectToRender, Renderable, SimpleObjectTextureResource, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{self, SamplerManager}, test_objects::SimpleRenderableObject, vertex::{SimpleVertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 
 
@@ -140,55 +140,55 @@ impl VkController {
         // let mip_levels = texture_image_allocation.get_mip_levels().unwrap();
         // Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
         
-        let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
+        // let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
         
         // let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
 
-        let mut ubo = UniformBufferObject {
-            model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        };
-        ubo.proj[(1, 1)] *= -1.0;
+        // let mut ubo = UniformBufferObject {
+        //     model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+        //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+        //     proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        // };
+        // ubo.proj[(1, 1)] *= -1.0;
 
-        let obj = Arc::new(SimpleRenderableObject {
-            vertices,
-            indices,
-            uniform_buffer: Arc::new(UniformBufferResource { buffer: ubo, binding: 0 }),
-            texture: Arc::new(TextureResource {
-                image: image::open("./assets/images/viking_room.png").unwrap(),
-                binding: 1,
-                stage: vk::ShaderStageFlags::FRAGMENT,
-                // sampler: texture_sampler,
-            }),
-            shaders: vec![
-                ShaderInfo {
-                    path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
-                    shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-                    entry_point: CString::new("main").unwrap(),
-                },
-                ShaderInfo {
-                    path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
-                    shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-                    entry_point: CString::new("main").unwrap(),
-                }
-            ],
-            descriptor_set_layout: None,
-        });
+        // let obj = Arc::new(SimpleRenderableObject {
+        //     vertices,
+        //     indices,
+        //     uniform_buffer: Arc::new(UniformBufferResource { buffer: ubo, binding: 0 }),
+        //     texture: Arc::new(TextureResource {
+        //         image: image::open("./assets/images/viking_room.png").unwrap(),
+        //         binding: 1,
+        //         stage: vk::ShaderStageFlags::FRAGMENT,
+        //         // sampler: texture_sampler,
+        //     }),
+        //     shaders: vec![
+        //         ShaderInfo {
+        //             path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
+        //             shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+        //             entry_point: CString::new("main").unwrap(),
+        //         },
+        //         ShaderInfo {
+        //             path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
+        //             shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+        //             entry_point: CString::new("main").unwrap(),
+        //         }
+        //     ],
+        //     descriptor_set_layout: None,
+        // });
         let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
-        let mut sampler_manager = SamplerManager::new();
-        let object_to_render = ObjectToRender::new(&device, &instance, &physical_device, obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &descriptor_pool, &mut sampler_manager, &mut allocator).unwrap();
+        let sampler_manager = SamplerManager::new();
+        // let object_to_render = ObjectToRender::new(&device, &instance, &physical_device, obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &descriptor_pool, &mut sampler_manager, &mut allocator).unwrap();
 
         // let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
         
         // let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
 
-        let mut pipeline_manager = PipelineManager::new(&device, swapchain_image_format, msaa_samples, Self::find_depth_format(&instance, &physical_device), &mut allocator);
+        let pipeline_manager = PipelineManager::new(&device, swapchain_image_format, msaa_samples, Self::find_depth_format(&instance, &physical_device), &mut allocator);
 
         // let graphics_pipeline = pipeline_manager.get_or_create_pipeline(&object_to_render.get_pipeline_config(), &device, &swapchain_extent, &mut allocator).unwrap();//Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator ); // 
 
-        let mut objects_to_render: Vec<(PipelineConfig, Box<dyn Renderable>)> = Vec::new();
-        objects_to_render.push((object_to_render.get_pipeline_config(), Box::new(object_to_render)));
+        let objects_to_render: Vec<(PipelineConfig, Box<dyn Renderable>)> = Vec::new();
+        // objects_to_render.push((object_to_render.get_pipeline_config(), Box::new(object_to_render)));
 
         let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
         
@@ -206,7 +206,7 @@ impl VkController {
         
         let mut command_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            command_buffers.push(Self::create_command_buffers(&device, &command_pool, objects_to_render.len() as u32));
+            command_buffers.push(Self::create_command_buffers(&device, &command_pool, 1));
         }
         
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device, &mut allocator );
@@ -1695,8 +1695,8 @@ impl VkController {
         Err(Cow::from("Failed to find suitable memory type!"))
     }
 
-    pub fn add_object_to_render(&mut self, object_to_render: Box<dyn Renderable>) {
-        self.objects_to_render.push((object_to_render.get_pipeline_config(), object_to_render));
+    pub fn get_swapchain_extent(&self) -> vk::Extent2D {
+        self.swapchain_extent
     }
 }
 
@@ -1750,5 +1750,18 @@ impl VkController {
         }
 
         vk::FALSE
+    }
+}
+
+
+pub trait VkControllerGraphicsObjectsControl<T: Vertex + Clone> {
+    fn add_object_to_render(&mut self, original_object: Arc<dyn GraphicsObject<T>>) -> Result<(), Cow<'static, str>>;
+}
+
+impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkController {
+    fn add_object_to_render(&mut self, original_object: Arc<dyn GraphicsObject<T>>) -> Result<(), Cow<'static, str> > {
+        let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_object, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, &mut self.allocator)?);
+        self.objects_to_render.push((object_to_render.get_pipeline_config(), object_to_render));
+        Ok(())
     }
 }
