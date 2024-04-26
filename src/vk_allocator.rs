@@ -164,41 +164,6 @@ impl VkAllocator {
         Ok(device_local_allocation)
     }
 
-    pub fn create_device_local_buffer_test<T: Serializable>(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, to_serialize: &[T], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
-        let data_vec = Self::serializable_vec_to_u8_vec(to_serialize);
-        let data = data_vec.as_slice();
-
-        let size = std::mem::size_of_val(data);
-
-        let staging_allocation = self.create_buffer(size as u64, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, force_own_memory_block)?;
-        
-        unsafe {
-            let mapped_memory_ptr = match self.device.map_memory(staging_allocation.memory, staging_allocation.memory_start, size as u64, vk::MemoryMapFlags::empty()) {
-                Ok(ptr) => ptr as *mut u8,
-                Err(err) => {
-                    self.free_memory_allocation(staging_allocation)?;
-                    return Err(Cow::from(format!("Failed to map memory when creating device local buffer because: {}", err)));
-                },
-            };
-            let data_ptr = data.as_ptr();
-            std::ptr::copy_nonoverlapping(data_ptr, mapped_memory_ptr, size);
-            self.device.unmap_memory(staging_allocation.memory);
-        }
-        
-        let device_local_allocation = self.create_buffer(size as u64, buffer_usage | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, force_own_memory_block)?;
-
-        self.copy_buffer(&staging_allocation, &device_local_allocation, command_pool, graphics_queue)?;
-
-        if self.free_memory_allocation(staging_allocation).is_err() {
-            if self.free_memory_allocation(device_local_allocation).is_err() {
-                return Err(Cow::from("Failed to free device local buffer allocation after freeing staging buffer allocation failed!"));
-            }
-            return Err(Cow::from("Failed to free staging buffer allocation!"));
-        }
-
-        Ok(device_local_allocation)
-    }
-
     pub fn create_image(&mut self, width: u32, height: u32, mip_levels: u32, num_samples: vk::SampleCountFlags, format: vk::Format, tiling: vk::ImageTiling, usage: vk::ImageUsageFlags, properties: vk::MemoryPropertyFlags) -> Result<AllocationInfo, Cow<'static, str>> {
         let image_info = vk::ImageCreateInfo {
             s_type: StructureType::IMAGE_CREATE_INFO,
@@ -352,14 +317,6 @@ impl VkAllocator {
             allocator.free_all_host_memory()?; 
         }
         Ok(())
-    }
-
-    fn serializable_vec_to_u8_vec<T: Serializable>(vec: &[T]) -> Vec<u8> {
-        let mut u8_vec = Vec::with_capacity(vec.len() * std::mem::size_of::<T>());
-        for item in vec {
-            u8_vec.append(&mut item.to_u8());
-        }
-        u8_vec
     }
 
     fn generate_mipmaps(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, image_format: vk::Format, width: u32, height: u32, mip_levels: u32) -> Result<(), Cow<'static, str>> {
@@ -756,7 +713,7 @@ impl VkAllocator {
 
         if let Some(memories) = self.device_allocations.get_mut(&memory_type_index) {
             for (memory, free_ranges) in memories.iter_mut() {
-                if free_ranges.len() > 1 || free_ranges.get(0).unwrap().0 != 0 || free_ranges.get(0).unwrap().1 != size {
+                if free_ranges.len() > 1 || free_ranges.first().unwrap().0 != 0 || free_ranges.first().unwrap().1 != size {
                     continue;
                 }
                 let allocation = Ok(AllocationInfo {
@@ -765,8 +722,8 @@ impl VkAllocator {
                     mip_levels: None,
                     image_view: None,
                     memory_index: memory_type_index,
-                    memory_start: free_ranges.get(0).unwrap().0,
-                    memory_end: free_ranges.get(0).unwrap().1,
+                    memory_start: free_ranges.first().unwrap().0,
+                    memory_end: free_ranges.first().unwrap().1,
                     memory: *memory,
                     uniform_pointers: Vec::new(),
                 });
@@ -774,7 +731,7 @@ impl VkAllocator {
                 return allocation;
             }
         }
-        return Err("Could not find free own memory block".into())
+        Err("Could not find free own memory block".into())
     }
 
     fn find_allocation(&mut self, memory_type_index: u32, size: u64, alignment: vk::DeviceSize) -> Result<AllocationInfo, Cow<'static, str>> {
@@ -818,15 +775,14 @@ impl VkAllocator {
     }
 
     pub unsafe fn get_allocation_callbacks(&self) -> vk::AllocationCallbacks {
-        let callbacks = vk::AllocationCallbacks {
+        vk::AllocationCallbacks {
             p_user_data: Arc::into_raw(self.host_allocator.clone()) as *mut c_void,
             pfn_allocation: Some(pfn_allocation),
             pfn_reallocation: Some(pfn_reallocation),
             pfn_free: Some(pfn_free),
             pfn_internal_allocation: None,
             pfn_internal_free: None,
-        };
-        callbacks
+        }
     }
 }
 
@@ -970,7 +926,7 @@ impl VkHostAllocator {
     }
 
     pub unsafe fn reallocate(&mut self, ptr: *mut c_void, new_size: usize) -> Result<*mut c_void, Cow<'static, str>> {
-        if let Some((alignment, size)) = self.allocated_host_pointers.get(&ptr) {
+        if let Some((alignment, _)) = self.allocated_host_pointers.get(&ptr) {
             let new_ptr = self.allocate_host_memory(new_size, *alignment)?;
             std::ptr::copy_nonoverlapping(ptr, new_ptr, new_size);
             self.free_host_memory(ptr)?;
@@ -1043,7 +999,7 @@ unsafe extern "system" fn pfn_allocation(p_user_data: *mut c_void, size: usize, 
     alloced_ptr
 }
 
-unsafe extern "system" fn pfn_reallocation(p_user_data: *mut c_void, original: *mut c_void, size: usize, alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
+unsafe extern "system" fn pfn_reallocation(p_user_data: *mut c_void, original: *mut c_void, size: usize, _alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
     let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkHostAllocator>);
     
     let realloc_ptr = {

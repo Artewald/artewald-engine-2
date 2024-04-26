@@ -22,7 +22,7 @@ fn main() {
     let window = WindowBuilder::new().with_title("Artewald Engine 2").build(&event_loop).unwrap();
 
     let mut vk_controller = VkController::new(window, "Artewald Engine 2");
-    let swapchain_extent = vk_controller.get_swapchain_extent();
+    let mut swapchain_extent = vk_controller.get_swapchain_extent();
 
     let (vertices, indices) = load_model("./assets/objects/viking_room.obj");
     
@@ -33,7 +33,7 @@ fn main() {
     };
     ubo.proj[(1, 1)] *= -1.0;
 
-    let mut obj = Arc::new(RwLock::new(SimpleRenderableObject {
+    let obj = Arc::new(RwLock::new(SimpleRenderableObject {
         vertices,
         indices,
         uniform_buffer: Arc::new(RwLock::new(UniformBufferResource { buffer: ubo, binding: 0 })),
@@ -41,7 +41,6 @@ fn main() {
             image: image::open("./assets/images/viking_room.png").unwrap(),
             binding: 1,
             stage: vk::ShaderStageFlags::FRAGMENT,
-            // sampler: texture_sampler,
         })),
         shaders: vec![
             ShaderInfo {
@@ -104,6 +103,7 @@ fn main() {
         if close {
             return;
         }
+        swapchain_extent = vk_controller.get_swapchain_extent();
         
         let mut ubo = UniformBufferObject {
             model: glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),

@@ -70,7 +70,7 @@ impl SamplerManager {
         }.map_err(|err| Cow::Owned(format!("Failed to create sampler: {}", err)))?;
 
         self.samplers.push((sampler_config, sampler));
-        return Ok(sampler);
+        Ok(sampler)
     }
 
     pub fn destroy_samplers(&mut self, device: &Device, allocator: &mut VkAllocator) {
