@@ -858,6 +858,10 @@ impl AllocationInfo {
     pub fn get_mip_levels(&self) -> Option<u32> {
         self.mip_levels
     }
+
+    pub fn get_memory_end(&self) -> vk::DeviceSize {
+        self.memory_end
+    }
 }
 
 // Host memory allocation

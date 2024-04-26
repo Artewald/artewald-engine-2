@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, ffi::CString, fs::read_to_string, rc::Rc, sync::Arc, time::Instant};
+use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, ffi::CString, fs::read_to_string, rc::Rc, sync::{Arc, RwLock}, time::Instant};
 
 use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -1755,11 +1755,11 @@ impl VkController {
 
 
 pub trait VkControllerGraphicsObjectsControl<T: Vertex + Clone> {
-    fn add_object_to_render(&mut self, original_object: Arc<dyn GraphicsObject<T>>) -> Result<(), Cow<'static, str>>;
+    fn add_object_to_render(&mut self, original_object: Arc<RwLock<dyn GraphicsObject<T>>>) -> Result<(), Cow<'static, str>>;
 }
 
 impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkController {
-    fn add_object_to_render(&mut self, original_object: Arc<dyn GraphicsObject<T>>) -> Result<(), Cow<'static, str> > {
+    fn add_object_to_render(&mut self, original_object: Arc<RwLock<(dyn GraphicsObject<T>)>>) -> Result<(), Cow<'static, str> > {
         let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_object, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, &mut self.allocator)?);
         self.objects_to_render.push((object_to_render.get_pipeline_config(), object_to_render));
         Ok(())

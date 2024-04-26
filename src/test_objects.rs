@@ -1,4 +1,4 @@
-use std::{collections::{hash_map, HashMap}, sync::Arc};
+use std::{collections::{hash_map, HashMap}, sync::{Arc, RwLock}};
 use ash::{vk::{DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateFlags, DescriptorSetLayoutCreateInfo, StructureType}, Device};
 use nalgebra_glm as glm;
 
@@ -7,8 +7,8 @@ use crate::{graphics_objects::{GraphicsObject, TextureResource, UniformBufferObj
 pub struct SimpleRenderableObject {
     pub vertices: Vec<SimpleVertex>,
     pub indices: Vec<u32>,
-    pub uniform_buffer: Arc<UniformBufferResource<UniformBufferObject>>,
-    pub texture: Arc<TextureResource>,
+    pub uniform_buffer: Arc<RwLock<UniformBufferResource<UniformBufferObject>>>,
+    pub texture: Arc<RwLock<TextureResource>>,
     pub shaders: Vec<ShaderInfo>,
     pub descriptor_set_layout: Option<DescriptorSetLayout>,
 }       
@@ -26,7 +26,7 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
         self.indices.clone()
     }
 
-    fn get_resources(&self) -> Vec<(u32, Arc<(dyn GraphicsResource + 'static)>)> {
+    fn get_resources(&self) -> Vec<(u32, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
         vec![
             (1, self.uniform_buffer.clone()),
             (2, self.texture.clone()),

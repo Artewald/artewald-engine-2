@@ -1,4 +1,4 @@
-use std::{collections::{hash_map, HashMap}, ffi::CString, sync::Arc};
+use std::{collections::{hash_map, HashMap}, ffi::CString, sync::{Arc, RwLock}};
 
 use ash::vk;
 use graphics_objects::{TextureResource, UniformBufferObject, UniformBufferResource};
@@ -33,16 +33,16 @@ fn main() {
     };
     ubo.proj[(1, 1)] *= -1.0;
 
-    let obj = Arc::new(SimpleRenderableObject {
+    let mut obj = Arc::new(RwLock::new(SimpleRenderableObject {
         vertices,
         indices,
-        uniform_buffer: Arc::new(UniformBufferResource { buffer: ubo, binding: 0 }),
-        texture: Arc::new(TextureResource {
+        uniform_buffer: Arc::new(RwLock::new(UniformBufferResource { buffer: ubo, binding: 0 })),
+        texture: Arc::new(RwLock::new(TextureResource {
             image: image::open("./assets/images/viking_room.png").unwrap(),
             binding: 1,
             stage: vk::ShaderStageFlags::FRAGMENT,
             // sampler: texture_sampler,
-        }),
+        })),
         shaders: vec![
             ShaderInfo {
                 path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
@@ -56,12 +56,13 @@ fn main() {
             }
         ],
         descriptor_set_layout: None,
-    });
+    }));
     
-    vk_controller.add_object_to_render(obj).unwrap();
+    vk_controller.add_object_to_render(obj.clone()).unwrap();
 
     let mut frame_count = 0;
     let mut last_fps_print = std::time::Instant::now();
+    let start_time = std::time::Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -104,6 +105,18 @@ fn main() {
             return;
         }
         
+        let mut ubo = UniformBufferObject {
+            model: glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        };
+        ubo.proj[(1, 1)] *= -1.0;
+        {
+            let obj_locked = obj.write().unwrap();
+            let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
+            ubo_locked.buffer = ubo;
+        }
+
         vk_controller.draw_frame();
         frame_count += 1;
         if last_fps_print.elapsed().as_secs_f32() > 1.0 {

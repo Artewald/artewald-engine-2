@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::Arc, time::Instant};
+use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::{Arc, RwLock}, time::Instant};
 
 use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
 use image::DynamicImage;
@@ -119,7 +119,7 @@ impl GraphicsResource for SimpleObjectTextureResource {
 pub trait GraphicsObject<T: Vertex> {
     fn get_vertices(&self) -> Vec<T>;
     fn get_indices(&self) -> Vec<u32>;
-    fn get_resources(&self) -> Vec<(ResourceID, Arc<dyn GraphicsResource>)>;
+    fn get_resources(&self) -> Vec<(ResourceID, Arc<RwLock<dyn GraphicsResource>>)>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
 }
 
@@ -142,20 +142,22 @@ pub struct ObjectToRender<T: Vertex> {
     index_allocation: Option<AllocationInfo>,
     extra_resource_allocations: Vec<ResourceAllocation>,
     pipeline_config: PipelineConfig,
-    original_object: Arc<dyn GraphicsObject<T>>,
+    original_object: Arc<RwLock<dyn GraphicsObject<T>>>,
     descriptor_sets: Vec<DescriptorSet>,
 }
 
 
 impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
-    pub fn new(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, original_object: Arc<dyn GraphicsObject<T>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
-        let vertices = original_object.get_vertices();
+    pub fn new(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, original_object: Arc<RwLock<dyn GraphicsObject<T>>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+        let original_object_locked = original_object.write().unwrap();
+        
+        let vertices = original_object_locked.get_vertices();
         let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertex_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
             Err(e) => return Err(Cow::from(e)),
         };
-        let indices = original_object.get_indices();
+        let indices = original_object_locked.get_indices();
         let index_data = indices.iter().map(|i| i.to_ne_bytes()).flatten().collect::<Vec<u8>>();
         let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &index_data, vk::BufferUsageFlags::INDEX_BUFFER, false) {
             Ok(alloc) => alloc,
@@ -166,9 +168,10 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             },
         
         };
-        let mut descriptor_set_layout_bindings: Vec<DescriptorSetLayoutBinding> = Vec::with_capacity(original_object.get_resources().len());
-        let mut extra_resource_allocations: Vec<ResourceAllocation> = Vec::with_capacity(original_object.get_resources().len());
-        for (id, resource) in original_object.get_resources() {
+        let mut descriptor_set_layout_bindings: Vec<DescriptorSetLayoutBinding> = Vec::with_capacity(original_object_locked.get_resources().len());
+        let mut extra_resource_allocations: Vec<ResourceAllocation> = Vec::with_capacity(original_object_locked.get_resources().len());
+        for (id, res) in original_object_locked.get_resources() {
+            let resource = res.read().unwrap();
             match resource.get_resource() {
                 GraphicsResourceType::UniformBuffer(buffer) => {
                     let allocation = match allocator.create_uniform_buffers(buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
@@ -233,7 +236,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 
         let pipeline_config = PipelineConfig::new(
             device, 
-            original_object.get_shader_infos(),
+            original_object_locked.get_shader_infos(),
             vertex_sample.get_input_binding_description(),
             vertex_sample.get_attribute_descriptions(),
             &descriptor_set_layout_bindings,
@@ -250,7 +253,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             index_allocation: Some(index_allocation),
             extra_resource_allocations,
             pipeline_config,
-            original_object,
+            original_object: original_object.clone(),
             descriptor_sets,
         })
 
@@ -278,16 +281,26 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
         for i in 0..frames_in_flight {
             let mut descriptor_writes: Vec<WriteDescriptorSet> = Vec::with_capacity(resource_allocations.len());
             
+            // We need this so that the buffer/image info is not dropped before the write descriptor is used
+            let mut buffer_infos = Vec::with_capacity(resource_allocations.len());
+            let mut image_infos = Vec::with_capacity(resource_allocations.len());
+
             for (_, descriptor_set_layout_binding, allocation_info, descriptor_type, sampler_option) in resource_allocations.iter() {
                 let write_descriptor = match *descriptor_type {
                     DescriptorType::UNIFORM_BUFFER => {
-                        // println!("Offset: {}", unsafe{allocation_info.get_uniform_pointers()[i as usize].offset_from(allocation_info.get_uniform_pointers()[0])});
                         let offset = unsafe {allocation_info.get_uniform_pointers()[i as usize].offset_from(allocation_info.get_uniform_pointers()[0])} as u64;
+                        let size = (allocation_info.get_memory_end()-allocation_info.get_memory_start())/allocation_info.get_uniform_pointers().len().max(1) as u64;
+                        // println!("Offset: {}, size: {}", offset , size);
+                        let buffer = allocation_info.get_buffer().unwrap();
                         let buffer_info = DescriptorBufferInfo {
-                            buffer: allocation_info.get_buffer().unwrap(),
+                            buffer,
                             offset,
-                            range: std::mem::size_of::<UniformBufferObject>() as u64,
+                            range: size,
                         };
+
+                        buffer_infos.push(buffer_info);
+                        let buffer_info = buffer_infos.last().unwrap();
+                        
                         vk::WriteDescriptorSet {
                             s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
                             dst_set: descriptor_sets[i as usize],
@@ -295,7 +308,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             dst_array_element: 0,
                             descriptor_type: DescriptorType::UNIFORM_BUFFER,
                             descriptor_count: 1,
-                            p_buffer_info: &buffer_info,
+                            p_buffer_info: buffer_info,
                             p_image_info: std::ptr::null(),
                             p_texel_buffer_view: std::ptr::null(),
                             ..Default::default()
@@ -308,6 +321,9 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                         };
                         
+                        image_infos.push(image_info);
+                        let image_info = image_infos.last().unwrap();
+
                         vk::WriteDescriptorSet {
                             s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
                             dst_set: descriptor_sets[i as usize],
@@ -315,10 +331,11 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             dst_array_element: 0,
                             descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                             descriptor_count: 1,
-                            p_image_info: &image_info,
+                            p_image_info: image_info,
                             p_texel_buffer_view: std::ptr::null(),
                             ..Default::default()
                         }
+
                     },
                     _ => {
                         panic!("Not implemented for descriptor type {:?}", descriptor_type.as_raw());
@@ -383,7 +400,8 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
     }
     
     fn get_num_indecies(&self) -> usize {
-        self.original_object.get_indices().len()
+        let original_object = self.original_object.read().unwrap();
+        original_object.get_indices().len()
     }
     
     fn borrow_vertex_allocation(&self) -> Option<&AllocationInfo> {
@@ -421,7 +439,8 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
     }
     
     fn update_extra_resource_allocations(&mut self, device: &Device, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
-        let resources = self.original_object.get_resources();
+        let original_object = self.original_object.read().unwrap();
+        let resources = original_object.get_resources();
         
         for (id, _, allocation_info, descriptor_type, _) in self.borrow_extra_resource_allocations() {
             match descriptor_type {
@@ -434,7 +453,8 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
                     // };
                     // ubo.proj[(1, 1)] *= -1.0;
                     let data = resources.iter().find(|(r_id, _)| id == *r_id).unwrap();
-                    let binary_data = match data.1.get_resource() {
+                    let graphics_data = data.1.read().unwrap();
+                    let binary_data = match graphics_data.get_resource() {
                         GraphicsResourceType::UniformBuffer(buffer) => buffer,
                         _ => {
                             return Err("Not implemented resource type for uniform buffer".into());
