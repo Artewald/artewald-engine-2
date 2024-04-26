@@ -1,13 +1,13 @@
-use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, rc::Rc, sync::{Arc, RwLock}};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, rc::Rc, sync::{Arc, RwLock}};
 
 use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::window::Window;
-use nalgebra_glm as glm;
 
 use crate::{graphics_objects::{GraphicsObject, ObjectToRender, Renderable, UniformBufferObject}, pipeline_manager::{PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
-
+type ObjectID = usize;
+type FrameCounter = usize;
 
 #[cfg(debug_assertions)]
 const IS_DEBUG_MODE: bool = true;
@@ -44,7 +44,7 @@ pub struct VkController {
     // indices: Vec<u32>,
     // vertex_allocation: Option<AllocationInfo>,
     // index_allocation: Option<AllocationInfo>,
-    objects_to_render: Vec<(PipelineConfig, Box<dyn Renderable>)>,
+    objects_to_render: HashMap<ObjectID, (PipelineConfig, Box<dyn Renderable>)>,
     uniform_allocation: Option<AllocationInfo>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
@@ -60,6 +60,7 @@ pub struct VkController {
     allocator: VkAllocator,
     graphics_pipeline_manager: PipelineManager,
     sampler_manager: SamplerManager,
+    objects_to_remove: Vec<(ObjectID, FrameCounter)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +86,7 @@ impl VkController {
     const DEVICE_EXTENSIONS: [*const i8; 1] = [Swapchain::name().as_ptr()];
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
+    const MAX_OBJECTS:  usize = 1000;
 
     pub fn new(window: Window, application_name: &str) -> Self {
         let entry = Entry::linked();
@@ -137,7 +139,7 @@ impl VkController {
 
         let pipeline_manager = PipelineManager::new(&device, swapchain_image_format, msaa_samples, Self::find_depth_format(&instance, &physical_device), &mut allocator);
 
-        let objects_to_render: Vec<(PipelineConfig, Box<dyn Renderable>)> = Vec::new();
+        let objects_to_render = HashMap::new();
 
         let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
 
@@ -192,6 +194,7 @@ impl VkController {
             allocator,
             graphics_pipeline_manager: pipeline_manager,
             sampler_manager,
+            objects_to_remove: Vec::new(),
         }
     }
 
@@ -416,6 +419,7 @@ impl VkController {
         let device_features = vk::PhysicalDeviceFeatures {
             sampler_anisotropy: vk::TRUE,
             sample_rate_shading: vk::TRUE, // This may cause performance loss, but it's not required
+            fill_mode_non_solid: vk::TRUE, // This is only required for wireframe rendering
             ..Default::default()
         };
 
@@ -462,8 +466,7 @@ impl VkController {
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
-            for i in (0..self.objects_to_render.len()).rev() {
-                let (_, mut renderable) = self.objects_to_render.remove(i);
+            for (_, (_, mut renderable)) in self.objects_to_render.drain() {
                 match renderable.cleanup(&self.device, &mut self.allocator) {
                     Ok(_) => (),
                     Err(_) => todo!(),
@@ -840,28 +843,44 @@ impl VkController {
             Err(error) => panic!("Failed to acquire next image: {:?}", error),
         };
         
-        // self.update_uniform_buffer(self.current_frame); // TODO: Update uniform buffers not just the one but every single one in the objects to render list.
-        
         unsafe {
             self.device.reset_fences(&[self.in_flight_fences[self.current_frame]]).unwrap();
         }
-        
+
         // TODO: Check if there are enough command buffers for the objects to render list for the current frame
-        if self.objects_to_render.len() != self.command_buffers[self.current_frame].len() {
+        if self.objects_to_render.len() - self.objects_to_remove.len() != self.command_buffers[self.current_frame].len() {
             unsafe {
                 self.device.free_command_buffers(self.command_pool, &self.command_buffers[self.current_frame]);
             }
+            
             self.command_buffers[self.current_frame] = Self::create_command_buffers(&self.device, &self.command_pool, self.objects_to_render.len() as u32);
         }
 
-        for (i, otr) in self.objects_to_render.iter_mut().enumerate() {
+        for (object_to_remove, counter) in self.objects_to_remove.iter_mut() {
+            if *counter >= Self::MAX_FRAMES_IN_FLIGHT {
+                self.objects_to_render.remove(object_to_remove);
+            }
+        }
+        self.objects_to_remove.retain(|(_, counter)| *counter < Self::MAX_FRAMES_IN_FLIGHT);
+
+        let mut buffer_counter = 0;
+        'outer: for (object_id, otr) in self.objects_to_render.iter_mut() {
+            for (object_to_remove, counter) in self.objects_to_remove.iter_mut() {
+                if object_id == object_to_remove {
+                    *counter += 1;
+                    continue 'outer;
+                }
+            }
+
             otr.1.update_extra_resource_allocations(&self.device, self.current_frame, &mut self.allocator).unwrap();
 
-            let cmd_buffer = self.command_buffers[self.current_frame][i];
+            let cmd_buffer = self.command_buffers[self.current_frame][buffer_counter];
             unsafe {
                 self.device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty()).unwrap();
             }
-            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap(), otr.1.borrow_vertex_allocation().unwrap(), otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), otr.1.borrow_descriptor_sets(), self.current_frame, otr.1.get_num_indecies() as u32);
+            let graphics_pipeline = self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap();
+            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &graphics_pipeline, otr.1.borrow_vertex_allocation().unwrap(), otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), otr.1.borrow_descriptor_sets(), self.current_frame, otr.1.get_num_indecies() as u32);
+            buffer_counter += 1;
         }
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -979,7 +998,7 @@ impl VkController {
             s_type: StructureType::DESCRIPTOR_POOL_CREATE_INFO,
             pool_size_count: pool_sizes.len() as u32,
             p_pool_sizes: pool_sizes.as_ptr(),
-            max_sets: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            max_sets: Self::MAX_FRAMES_IN_FLIGHT as u32 * Self::MAX_OBJECTS as u32,
             ..Default::default()
         };
 
@@ -1050,6 +1069,11 @@ impl VkController {
     pub fn get_swapchain_extent(&self) -> vk::Extent2D {
         self.swapchain_extent
     }
+
+    // The object will not be remove until the all frames in flight have passed
+    pub fn remove_object_to_render(&mut self, object_id: ObjectID) {
+        self.objects_to_remove.push((object_id, 0));
+    }
 }
 
 // Debugging and validation
@@ -1107,13 +1131,26 @@ impl VkController {
 
 
 pub trait VkControllerGraphicsObjectsControl<T: Vertex + Clone> {
-    fn add_object_to_render(&mut self, original_object: Arc<RwLock<dyn GraphicsObject<T>>>) -> Result<(), Cow<'static, str>>;
+    fn add_object_to_render(&mut self, original_object: Arc<RwLock<dyn GraphicsObject<T>>>) -> Result<ObjectID, Cow<'static, str>>;
 }
 
 impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkController {
-    fn add_object_to_render(&mut self, original_object: Arc<RwLock<(dyn GraphicsObject<T>)>>) -> Result<(), Cow<'static, str> > {
+    fn add_object_to_render(&mut self, original_object: Arc<RwLock<(dyn GraphicsObject<T>)>>) -> Result<ObjectID, Cow<'static, str> > {
+        if self.objects_to_render.len() >= Self::MAX_OBJECTS {
+            return Err("Maximum number of objects to render has been reached!".into());
+        }
+        
+        let mut object_id = rand::random::<ObjectID>();
+        let mut counter = 0;
+        while self.objects_to_render.contains_key(&object_id) {
+            object_id = rand::random::<ObjectID>();
+            counter += 1;
+            if counter > 1000 {
+                return Err("Failed to generate a unique object ID!".into());
+            }
+        }
         let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_object, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, &mut self.allocator)?);
-        self.objects_to_render.push((object_to_render.get_pipeline_config(), object_to_render));
-        Ok(())
+        self.objects_to_render.insert(object_id, (object_to_render.get_pipeline_config(), object_to_render));
+        Ok(object_id)
     }
 }

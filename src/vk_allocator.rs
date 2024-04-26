@@ -151,7 +151,7 @@ impl VkAllocator {
         }
         
         let device_local_allocation = self.create_buffer(size as u64, buffer_usage | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, force_own_memory_block)?;
-
+        println!("Device local buffer created {:?}", device_local_allocation.memory);
         self.copy_buffer(&staging_allocation, &device_local_allocation, command_pool, graphics_queue)?;
 
         if self.free_memory_allocation(staging_allocation).is_err() {
@@ -304,6 +304,7 @@ impl VkAllocator {
         for (_, allocations) in self.device_allocations.iter() {
             for (memory, _) in allocations.iter() {
                 unsafe {
+                    println!("Freeing memory: {:?}", memory);
                     self.device.free_memory(*memory, Some(&self.get_allocation_callbacks()));
                 }
             }

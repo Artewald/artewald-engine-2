@@ -145,7 +145,7 @@ impl PipelineConfig {
             s_type: StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             depth_clamp_enable: vk::FALSE,
             rasterizer_discard_enable: vk::FALSE,
-            polygon_mode: vk::PolygonMode::FILL,
+            polygon_mode: vk::PolygonMode::LINE,
             line_width: 1.0,
             cull_mode: vk::CullModeFlags::BACK,
             front_face: vk::FrontFace::COUNTER_CLOCKWISE,
@@ -294,7 +294,7 @@ impl PipelineConfig {
             p_push_constant_ranges: std::ptr::null(),
             ..Default::default()
         };
-
+        println!("Creating pipeline layout");
         self.pipeline_layout = Some(unsafe {
             device.create_pipeline_layout(&pipeline_layout_create_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap());
@@ -336,7 +336,8 @@ impl PartialEq for PipelineConfig {
         self.vertex_attribute_info.iter().all(|attribute| other.vertex_attribute_info.iter().any(|other_attribute| attribute.binding == other_attribute.binding && attribute.location == other_attribute.location && attribute.format == other_attribute.format && attribute.offset == other_attribute.offset)) &&
         self.msaa_samples == other.msaa_samples &&
         self.swapchain_format == other.swapchain_format &&
-        self.depth_format == other.depth_format
+        self.depth_format == other.depth_format &&
+        self.descriptor_set_layout == other.descriptor_set_layout
     }
 }
 
@@ -354,7 +355,11 @@ impl PipelineManager {
     }
 
     pub fn get_or_create_pipeline(&mut self, pipeline_config: &mut PipelineConfig, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
-        if let Some((_, pipeline)) = self.graphics_pipelines.iter().find(|(config, _)| config == pipeline_config) {
+        if let Some((p_config, pipeline)) = self.graphics_pipelines.iter().find(|(config, _)| config == pipeline_config) {
+            if pipeline_config.pipeline_layout.is_none() {
+                // This is needed because some new objects with the same pipeline layout might be added, so we need to update their pipeline layout
+                pipeline_config.pipeline_layout = Some(p_config.pipeline_layout.unwrap());
+            }
             Ok(*pipeline)
         } else {
             let pipeline = pipeline_config.create_graphics_pipeline(device, swapchain_extent, self.render_pass.unwrap(), allocator)?;

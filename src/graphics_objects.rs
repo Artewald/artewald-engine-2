@@ -351,35 +351,6 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 
         descriptor_sets
     }
-
-    // fn create_texture_sampler(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, mip_levels: u32, allocator: &mut VkAllocator) -> vk::Sampler {
-    //     let max_anisotropy = unsafe {
-    //         instance.get_physical_device_properties(*physical_device).limits.max_sampler_anisotropy
-    //     };
-    //     let sampler_info = vk::SamplerCreateInfo {
-    //         s_type: StructureType::SAMPLER_CREATE_INFO,
-    //         mag_filter: vk::Filter::LINEAR,
-    //         min_filter: vk::Filter::LINEAR,
-    //         address_mode_u: vk::SamplerAddressMode::REPEAT,
-    //         address_mode_v: vk::SamplerAddressMode::REPEAT,
-    //         address_mode_w: vk::SamplerAddressMode::REPEAT,
-    //         anisotropy_enable: vk::TRUE,
-    //         max_anisotropy,
-    //         border_color: vk::BorderColor::INT_OPAQUE_BLACK,
-    //         unnormalized_coordinates: vk::FALSE,
-    //         compare_enable: vk::FALSE,
-    //         compare_op: vk::CompareOp::ALWAYS,
-    //         mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-    //         mip_lod_bias: 0.0,
-    //         min_lod: 0.0,
-    //         max_lod: mip_levels as f32,
-    //         ..Default::default()
-    //     };
-
-    //     unsafe {
-    //         device.create_sampler(&sampler_info, Some(&allocator.get_allocation_callbacks())).unwrap()
-    //     }
-    // }
 }
 
 impl<T: Vertex> Renderable for ObjectToRender<T> {

@@ -1,7 +1,7 @@
 use ash::vk;
 use memoffset::offset_of;
 use nalgebra_glm as glm;
-use std::hash::{Hash, Hasher};
+use std::{f32::consts::PI, hash::{Hash, Hasher}, num};
 
 use crate::{pipeline_manager::Vertex, vk_allocator::Serializable};
 
@@ -101,4 +101,158 @@ impl Serializable for u32 {
         let index_bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
         index_bytes.to_vec()
     }
+}
+
+// ========================================================================================================================================
+
+#[derive(Debug, Clone, Copy, Default)]
+#[repr(C)]
+pub struct OnlyTwoDPositionVertex {
+    pub position: glm::Vec2,
+    pub _padding: f32,
+}
+
+impl Vertex for OnlyTwoDPositionVertex {
+    fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription {
+        vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: std::mem::size_of::<Self>() as u32,
+            input_rate: vk::VertexInputRate::VERTEX,
+        }
+    }
+
+    fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription> {
+        let position_attribute_description = vk::VertexInputAttributeDescription {
+            binding: 0,
+            location: 0,
+            format: vk::Format::R32G32B32_SFLOAT,
+            offset: offset_of!(Self, position) as u32,
+        };
+
+        vec![position_attribute_description]
+    }
+}
+
+impl Hash for OnlyTwoDPositionVertex {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.position.iter().for_each(|&i| i.to_bits().hash(state));
+    }
+}
+
+impl PartialEq for OnlyTwoDPositionVertex {
+    fn eq(&self, other: &Self) -> bool {
+        self.position == other.position
+    }
+}
+
+impl Eq for OnlyTwoDPositionVertex {}
+
+impl Serializable for OnlyTwoDPositionVertex {
+    fn to_u8(&self) -> Vec<u8> {
+        let vertex_bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
+        vertex_bytes.to_vec()
+    }
+}
+
+
+pub fn generate_circle_type_one(radius: f32, num_points: usize) -> (Vec<OnlyTwoDPositionVertex>, Vec<u32>) {
+    let points = calculate_circle_points(radius, num_points);
+    let mut vertices = vec![OnlyTwoDPositionVertex { position: glm::Vec2::new(0.0, 0.0), _padding: 0.0}];
+    let mut indices = Vec::new();
+    
+    for point in points {
+        vertices.push(OnlyTwoDPositionVertex { position: point, _padding: 0.0});
+    }
+
+    for i in 0..(num_points - 1) {
+        indices.push(0);
+        indices.push((i + 1) as u32);
+        indices.push((i + 2) as u32);
+    }
+
+    indices.push(0);
+    indices.push(num_points as u32);
+    indices.push(1);
+
+    indices.reverse();
+    (vertices, indices)
+}
+
+pub fn generate_circle_type_two(radius: f32, num_points: usize) -> (Vec<OnlyTwoDPositionVertex>, Vec<u32>) {
+    // if num_points % 2 != 0 {
+    //     panic!("Number of points must be even for this type of circle");
+    // }
+    
+    let points = calculate_circle_points(radius, num_points);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    
+    for point in points {
+        vertices.push(OnlyTwoDPositionVertex { position: point, _padding: 0.0});
+    }
+
+    indices.push(0);
+    indices.push(num_points as u32 - 1);
+    indices.push(1);
+
+    // For 12 points the following would be the middle indices:
+    for i in 1..(num_points as u32 / 2 - 1) {
+        indices.push(i);
+        indices.push(num_points as u32 - i);
+        indices.push(num_points as u32 - i - 1);
+        indices.push(i);
+        indices.push(num_points as u32 - i - 1);
+        indices.push(i + 1);
+    }
+
+    indices.push(num_points as u32 / 2);
+    indices.push(num_points as u32 / 2 - 1);
+    indices.push(num_points as u32 / 2 + 1);
+
+    println!("{:?}", indices.len());
+
+    // indices.reverse();
+    (vertices, indices)
+}
+
+pub fn generate_circle_type_three(radius: f32, num_points: usize) -> (Vec<OnlyTwoDPositionVertex>, Vec<u32>) {
+    let points = calculate_circle_points(radius, num_points);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    
+    for point in points {
+        vertices.push(OnlyTwoDPositionVertex { position: point, _padding: 0.0});
+    }
+
+    for i in (0..(num_points as u32 - 2)).step_by(2) {
+        indices.push(i);
+        indices.push(i + 2);
+        indices.push(i + 1);
+    }
+    indices.push(num_points as u32 - 2);
+    indices.push(0);
+    indices.push(num_points as u32 - 1);
+
+    let num_levels = (num_points as f64 / 4.0).ceil() as u32 - 1;
+    for i in 1..=num_levels {
+        let step_by = i * 2;
+        let num_triangles_in_level = (num_points as f64 / (3.0 * i as f64)).ceil() as usize - 1;
+        let mut index = 0;
+        for _ in 0..num_triangles_in_level as u32 {
+            indices.push(index % num_points as u32);
+            indices.push((index + step_by * 2) % num_points as u32);
+            indices.push((index + step_by) % num_points as u32);
+            index += step_by * 2;
+        }
+    }
+
+
+    (vertices, indices)
+}
+
+fn calculate_circle_points(radius: f32, num_points: usize) -> Vec<glm::Vec2> {
+    (0..num_points).map(|i| {
+        let angle = i as f32 * 2.0 * PI / num_points as f32;
+        glm::Vec2::new(radius * angle.cos(), radius * angle.sin())
+    }).collect()
 }
