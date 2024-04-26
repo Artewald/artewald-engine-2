@@ -52,7 +52,7 @@ pub struct VkController {
     is_minimized: bool,
     start_time: Instant,
     descriptor_pool: vk::DescriptorPool,
-    descriptor_sets: Vec<vk::DescriptorSet>,
+    // descriptor_sets: Vec<vk::DescriptorSet>,
     mip_levels: u32,
     texture_image_allocation: Option<AllocationInfo>,
     texture_sampler: vk::Sampler,
@@ -127,9 +127,22 @@ impl VkController {
         let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format, &mut allocator );
         
         // let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples, &mut allocator );
+
+        let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
+        
+        let depth_image_allocation = Self::create_depth_resources(&instance, &physical_device, &swapchain_extent, msaa_samples, &mut allocator );
+        
+        
+        let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
+
+        let mut texture_image_allocation = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
+        let mip_levels = texture_image_allocation.get_mip_levels().unwrap();
+        Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
         
         let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
         
+        let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
+
         let obj = Arc::new(SimpleRenderableObject {
             vertices,
             indices,
@@ -142,6 +155,7 @@ impl VkController {
                 image: image::open("./assets/images/viking_room.png").unwrap(),
                 binding: 1,
                 stage: vk::ShaderStageFlags::FRAGMENT,
+                sampler: texture_sampler,
             }),
             shaders: vec![
                 ShaderInfo {
@@ -155,9 +169,10 @@ impl VkController {
                     entry_point: CString::new("main").unwrap(),
                 }
             ],
+            descriptor_set_layout: None,
         });
-        let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
-        let object_to_render = ObjectToRender::new(obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &mut allocator).unwrap();
+        let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
+        let object_to_render = ObjectToRender::new(&device, obj, swapchain_image_format, Self::find_depth_format(&instance, &physical_device), &command_pool, &graphics_queue, msaa_samples, &descriptor_pool, mip_levels, &mut allocator).unwrap();
 
         // let descriptor_set_layout = Self::create_descriptor_set_layout(&device, &mut allocator );
         
@@ -170,18 +185,9 @@ impl VkController {
         let mut objects_to_render: Vec<(PipelineConfig, Box<dyn Renderable>)> = Vec::new();
         objects_to_render.push((object_to_render.get_pipeline_config(), Box::new(object_to_render)));
 
-        let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
-        
-        let depth_image_allocation = Self::create_depth_resources(&instance, &physical_device, &swapchain_extent, msaa_samples, &mut allocator );
-        
         let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
         
-        let mut texture_image_allocation = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
-        let mip_levels = texture_image_allocation.get_mip_levels().unwrap();
-
-        Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
-        
-        let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
+        // let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
 
         // let vertex_allocation = Self::create_vertex_buffer(&command_pool, &graphics_queue, &vertices, &mut allocator );
 
@@ -189,9 +195,9 @@ impl VkController {
 
         let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
         
-        let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
+        // let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
         
-        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_allocation, &descriptor_set_layout, &texture_image_allocation, &texture_sampler);
+        // let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_allocation, &descriptor_set_layout, &texture_image_allocation, &texture_sampler);
         
         let mut command_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
@@ -233,7 +239,7 @@ impl VkController {
             is_minimized: false,
             start_time: Instant::now(),
             descriptor_pool,
-            descriptor_sets,
+            // descriptor_sets,
             texture_image_allocation: Some(texture_image_allocation),
             texture_sampler,
             color_image_allocation: Some(color_image_allocation),
@@ -516,18 +522,15 @@ impl VkController {
             // self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, Some(&self.allocator.get_allocation_callbacks()));
 
             // self.device.destroy_pipeline(self.graphics_pipeline, Some(&self.allocator.get_allocation_callbacks()));
-            self.graphics_pipeline_manager.destroy(&self.device, &mut self.allocator);
+            // self.graphics_pipeline_manager.destroy(&self.device, &mut self.allocator);
             // self.device.destroy_pipeline_layout(self.pipeline_layout, Some(&self.allocator.get_allocation_callbacks()));
             // self.device.destroy_render_pass(self.render_pass, Some(&self.allocator.get_allocation_callbacks()));
-
             for i in (0..self.objects_to_render.len()).rev() {
-                let mut otr = self.objects_to_render.remove(i);
-                self.allocator.free_memory_allocation(otr.1.take_index_allocation()).unwrap();
-                self.allocator.free_memory_allocation(otr.1.take_vertex_allocation()).unwrap();
-                for (_, allocation) in otr.1.borrow_extra_resource_allocations() {
-                    self.allocator.free_memory_allocation(allocation).unwrap();
-                }
+                let (_, mut renderable) = self.objects_to_render.remove(i);
+                renderable.cleanup(&self.device, &mut self.allocator);
             }
+            
+            self.graphics_pipeline_manager.destroy(&self.device, &mut self.allocator);
 
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
                 self.device.destroy_semaphore(self.render_finished_semaphores[i], Some(&self.allocator.get_allocation_callbacks()));
@@ -1098,7 +1101,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &Vec<vk::DescriptorSet>, current_frame: usize, indices: &[u32]) {
+    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &[vk::DescriptorSet], current_frame: usize, indices: &[u32]) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -1201,7 +1204,7 @@ impl VkController {
                 self.device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty()).unwrap();
             }
             
-            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap(), &otr.1.borrow_vertex_allocation().unwrap(), &otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), &self.descriptor_sets, self.current_frame, &[(otr.1.get_num_indecies() as u32)]);
+            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap(), &otr.1.borrow_vertex_allocation().unwrap(), &otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), otr.1.borrow_descriptor_sets(), self.current_frame, &[(otr.1.get_num_indecies() as u32)]);
         }
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];

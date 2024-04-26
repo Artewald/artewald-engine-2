@@ -43,7 +43,7 @@ pub struct PipelineConfig {
 }
 
 impl PipelineConfig {
-    pub fn new(shaders: Vec<ShaderInfo>, vertex_binding_info: VertexInputBindingDescription, vertex_attribute_info: Vec<VertexInputAttributeDescription>, descriptor_set_layout: DescriptorSetLayout, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format) -> Result<Self, Cow<'static, str>> {
+    pub fn new(device: &Device, shaders: Vec<ShaderInfo>, vertex_binding_info: VertexInputBindingDescription, vertex_attribute_info: Vec<VertexInputAttributeDescription>, descriptor_set_layout_bindings: &[DescriptorSetLayoutBinding], msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         if vertex_attribute_info.len() == 0 {
             return Err(Cow::Borrowed("Vertex attribute descriptions are empty"));
         }
@@ -68,7 +68,7 @@ impl PipelineConfig {
         //     descriptor_set_layout_bindings.push(resource_binding);
         // }
 
-        // let descriptor_set_layout = Self::create_descriptor_set_layout(device, &descriptor_set_layout_bindings, allocator);
+        let descriptor_set_layout = Self::create_descriptor_set_layout(device, &descriptor_set_layout_bindings, allocator);
 
         // let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, &descriptor_set_layout, resources, frames_in_flight);
 
@@ -217,7 +217,8 @@ impl PipelineConfig {
             ..Default::default()
         };
 
-        let pipeline_layout = self.get_or_create_pipeline_layout(device, &self.descriptor_set_layout, allocator);
+        let descriptor_set_layout = self.descriptor_set_layout;
+        let pipeline_layout = self.get_or_create_pipeline_layout(device, &descriptor_set_layout, allocator);
 
         // let render_pass = self.create_render_pass(device, allocator);
 
@@ -315,20 +316,24 @@ impl PipelineConfig {
         self.pipeline_layout.unwrap()
     }
 
-    // fn create_descriptor_set_layout(device: &Device, descriptor_set_layout_bindings: &[vk::DescriptorSetLayoutBinding], allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
-    //     let layout_bindings = descriptor_set_layout_bindings.clone();
+    fn create_descriptor_set_layout(device: &Device, descriptor_set_layout_bindings: &[vk::DescriptorSetLayoutBinding], allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
+        let layout_bindings = descriptor_set_layout_bindings.clone();
 
-    //     let layout_info = vk::DescriptorSetLayoutCreateInfo {
-    //         s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-    //         binding_count: layout_bindings.len() as u32,
-    //         p_bindings: layout_bindings.as_ptr(),
-    //         ..Default::default()
-    //     };
+        let layout_info = vk::DescriptorSetLayoutCreateInfo {
+            s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            binding_count: layout_bindings.len() as u32,
+            p_bindings: layout_bindings.as_ptr(),
+            ..Default::default()
+        };
 
-    //     unsafe {
-    //         device.create_descriptor_set_layout(&layout_info, Some(&allocator.get_allocation_callbacks()))
-    //     }.unwrap()
-    // }
+        unsafe {
+            device.create_descriptor_set_layout(&layout_info, Some(&allocator.get_allocation_callbacks()))
+        }.unwrap()
+    }
+
+    pub fn borrow_descriptor_set_layout(&self) -> &vk::DescriptorSetLayout {
+        &self.descriptor_set_layout
+    }
 
     // fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, descriptor_set_layout: &vk::DescriptorSetLayout, resources: &[Arc<dyn GraphicsResource>], frames_in_flight: u32) -> Vec<vk::DescriptorSet> {
     //     let layouts = vec![*descriptor_set_layout; frames_in_flight as usize];
@@ -452,6 +457,7 @@ impl PipelineManager {
             unsafe {
                 device.destroy_pipeline(*pipeline, Some(&allocator.get_allocation_callbacks()));
                 device.destroy_pipeline_layout(config.pipeline_layout.unwrap(), Some(&allocator.get_allocation_callbacks()));
+                device.destroy_descriptor_set_layout(config.descriptor_set_layout, Some(&allocator.get_allocation_callbacks()));
                 // device.destroy_descriptor_set_layout(config.descriptor_set_layout.unwrap(), Some(&allocator.get_allocation_callbacks()));
             }
         }

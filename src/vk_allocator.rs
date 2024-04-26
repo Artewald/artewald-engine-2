@@ -64,19 +64,21 @@ impl VkAllocator {
     }
 
     pub fn create_uniform_buffers(&mut self, buffer_size: usize, num_buffers: usize) -> Result<AllocationInfo, Cow<'static, str>> {
-        let buffer_size = (buffer_size * num_buffers) as u64;
+        let total_buffer_size = (buffer_size * num_buffers) as u64;
 
         // let mut uniform_buffers = Vec::with_capacity(num_buffers);
         
-        let mut allocation_info = self.create_buffer(buffer_size, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, true)?; //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        let mut allocation_info = self.create_buffer(total_buffer_size, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, true)?; //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        // println!("Device: {:?}, memory start (inclusive): {}, memory end (exclusive): {}, type: {}", allocation_info.memory, allocation_info.memory_start, allocation_info.memory_end, allocation_info.memory_index);
         let data_ptr = unsafe {
-            self.device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), buffer_size, vk::MemoryMapFlags::empty()).unwrap()
+            self.device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), total_buffer_size, vk::MemoryMapFlags::empty()).unwrap()
         };
         for i in 0..num_buffers {
-            let offset = match (i*buffer_size as usize/num_buffers).try_into() {
+            let offset = match (i*buffer_size).try_into() {
                 Ok(offset) => offset,
                 Err(err) => return Err(Cow::from(format!("Failed to create uniform buffers because: {}", err))),
             };
+            // println!("Total size: {}, single size: {}, offset: {}, num_buffer: {}", total_buffer_size, buffer_size, offset, num_buffers);
             allocation_info.uniform_pointers.push(unsafe {data_ptr.offset(offset)});
         }
 
@@ -254,7 +256,7 @@ impl VkAllocator {
         let mip_levels = (((image.dimensions().0 as f32).max(image.dimensions().1 as f32).log2().floor() + 1.0) as u32).min(max_mip_levels);
 
         let staging_allocation = self.create_buffer(image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, force_own_memory_block)?;
-
+        // println!("Memory start (including): {}, memory end (excluding): {}, index: {}, device memory: {:?}, force_own_memory_block: {}, img: {:?}", staging_allocation.memory_start, staging_allocation.memory_end, staging_allocation.memory_index, staging_allocation.memory, force_own_memory_block, image.get_pixel(0, 0));
         unsafe {
             let data_ptr = match self.device.map_memory(staging_allocation.memory, staging_allocation.memory_start, image_size, vk::MemoryMapFlags::empty()) {
                 Ok(ptr) => ptr as *mut u8,
@@ -548,7 +550,7 @@ impl VkAllocator {
 
                 let mut i = 0;
                 while i < free_ranges.len() - 1 {
-                    if free_ranges[i].1 == free_ranges[i + 1].0 - 1 {
+                    if free_ranges[i + 1].0 > 0 && free_ranges[i].1 == free_ranges[i + 1].0 - 1 {
                         free_ranges[i].1 = free_ranges[i + 1].1;
                         free_ranges.remove(i + 1);
                     }
@@ -735,14 +737,44 @@ impl VkAllocator {
     }
 
     fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize, alignment: vk::DeviceSize, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+        if force_own_memory_block {
+            return self.create_own_device_memory_block(memory_type_index, size);
+        }
+        
         let mut allocation = self.find_allocation(memory_type_index, size, alignment);
 
         if allocation.is_err() {
-            self.allocate_new_device_memory(memory_type_index, size, force_own_memory_block)?;
+            self.allocate_new_device_memory(memory_type_index, size, false)?;
             allocation = self.find_allocation(memory_type_index, size, alignment);
         }
 
         allocation
+    }
+
+    fn create_own_device_memory_block(&mut self, memory_type_index: u32, size: u64) -> Result<AllocationInfo, Cow<'static, str>> {
+        self.allocate_new_device_memory(memory_type_index, size, true)?;
+
+        if let Some(memories) = self.device_allocations.get_mut(&memory_type_index) {
+            for (memory, free_ranges) in memories.iter_mut() {
+                if free_ranges.len() > 1 || free_ranges.get(0).unwrap().0 != 0 || free_ranges.get(0).unwrap().1 != size {
+                    continue;
+                }
+                let allocation = Ok(AllocationInfo {
+                    buffer: None,
+                    image: None,
+                    mip_levels: None,
+                    image_view: None,
+                    memory_index: memory_type_index,
+                    memory_start: free_ranges.get(0).unwrap().0,
+                    memory_end: free_ranges.get(0).unwrap().1,
+                    memory: *memory,
+                    uniform_pointers: Vec::new(),
+                });
+                free_ranges.get_mut(0).unwrap().0 = size;
+                return allocation;
+            }
+        }
+        return Err("Could not find free own memory block".into())
     }
 
     fn find_allocation(&mut self, memory_type_index: u32, size: u64, alignment: vk::DeviceSize) -> Result<AllocationInfo, Cow<'static, str>> {
@@ -754,8 +786,8 @@ impl VkAllocator {
                     if *end - aligned_start >= size {
                         let allocation = Ok(AllocationInfo {
                             memory_index: memory_type_index,
-                            memory_start: aligned_start,
-                            memory_end: aligned_start + size,
+                            memory_start: aligned_start, // Including
+                            memory_end: aligned_start + size, // Excluding
                             buffer: None,
                             image: None,
                             memory: *memory,

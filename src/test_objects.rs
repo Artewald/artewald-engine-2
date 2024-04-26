@@ -37,23 +37,23 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
         self.shaders.clone()
     }
     
-    fn get_or_create_descriptor_set_layout(&self, device: &Device, allocator: &mut VkAllocator) -> DescriptorSetLayout {
-        if self.descriptor_set_layout.is_some() {
-            return self.descriptor_set_layout.unwrap();
-        }
+    // fn get_or_create_descriptor_set_layout(&self, device: &Device, allocator: &mut VkAllocator) -> DescriptorSetLayout {
+    //     if self.descriptor_set_layout.is_some() {
+    //         return self.descriptor_set_layout.unwrap();
+    //     }
 
-        let bindings: Vec<DescriptorSetLayoutBinding> = self.get_resources().iter().map(|resource| resource.get_descriptor_set_layout_binding()).collect();
-        let create_info = DescriptorSetLayoutCreateInfo {
-            flags: DescriptorSetLayoutCreateFlags::empty(),
-            binding_count: bindings.len() as u32,
-            p_bindings: bindings.as_ptr(),
-            ..Default::default()
-        };
+    //     let bindings: Vec<DescriptorSetLayoutBinding> = self.get_resources().iter().map(|resource| resource.get_descriptor_set_layout_binding()).collect();
+    //     let create_info = DescriptorSetLayoutCreateInfo {
+    //         flags: DescriptorSetLayoutCreateFlags::empty(),
+    //         binding_count: bindings.len() as u32,
+    //         p_bindings: bindings.as_ptr(),
+    //         ..Default::default()
+    //     };
 
-        unsafe {
-            device.create_descriptor_set_layout(&create_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
-    }
+    //     unsafe {
+    //         device.create_descriptor_set_layout(&create_info, Some(&allocator.get_allocation_callbacks()))
+    //     }.unwrap()
+    // }
 }
 
 
