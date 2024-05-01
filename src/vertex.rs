@@ -1,7 +1,7 @@
 use ash::vk;
 use memoffset::offset_of;
 use nalgebra_glm as glm;
-use std::{f32::consts::PI, hash::{Hash, Hasher}, num};
+use std::{collections::VecDeque, f32::consts::PI, hash::{Hash, Hasher}, num};
 
 use crate::{pipeline_manager::Vertex, vk_allocator::Serializable};
 
@@ -214,44 +214,42 @@ pub fn generate_circle_type_two(radius: f32, num_points: usize) -> (Vec<OnlyTwoD
 }
 
 pub fn generate_circle_type_three(radius: f32, num_points: usize) -> (Vec<OnlyTwoDPositionVertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    let mut vertices = Vec::with_capacity(num_points);
+    let mut indices = Vec::with_capacity(num_points * 3);
+    let mut edge_queue = VecDeque::with_capacity(num_points);
 
-    let mut edge_queue = Vec::new();
+    // Precompute trigonometric values
+    let angles: Vec<f32> = match num_points % 3 {
+        0 => vec![0.0, 120.0, 240.0],
+        1 => vec![0.0, 90.0, 180.0, 270.0],
+        _ => vec![0.0, 60.0, 120.0, 180.0, 240.0, 300.0],
+    };
 
-    if num_points % 3 == 0 {
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(0.0, radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(120f32.to_radians().sin() * radius, 120f32.to_radians().cos() * radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(240f32.to_radians().sin() * radius, 240f32.to_radians().cos() * radius), _padding: 0.0});
-        indices.append(&mut vec![0, 1, 2]);
-        edge_queue.append(&mut vec![(0, 1), (1, 2), (2, 0)]);
-    } else if num_points % 3 == 1 {
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(0.0, radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(90f32.to_radians().sin() * radius, 90f32.to_radians().cos() * radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(180f32.to_radians().sin() * radius, 180f32.to_radians().cos() * radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(270f32.to_radians().sin() * radius, 270f32.to_radians().cos() * radius), _padding: 0.0});
-        indices.append(&mut vec![0, 1, 2, 0, 2, 3]);
-        edge_queue.append(&mut vec![(0, 1), (1, 2), (2, 3), (3, 0)]);
-    } else if num_points % 3 == 2 {
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(0.0, radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(60f32.to_radians().sin() * radius, 60f32.to_radians().cos() * radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(120f32.to_radians().sin() * radius, 120f32.to_radians().cos() * radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(180f32.to_radians().sin() * radius, 180f32.to_radians().cos() * radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(240f32.to_radians().sin() * radius, 240f32.to_radians().cos() * radius), _padding: 0.0});
-        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(300f32.to_radians().sin() * radius, 300f32.to_radians().cos() * radius), _padding: 0.0});
-        indices.append(&mut vec![0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5]);
-        edge_queue.append(&mut vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0)]);
+    let positions: Vec<_> = angles.iter()
+        .map(|&angle| {
+            let rad = angle.to_radians();
+            glm::Vec2::new(rad.sin() * radius, rad.cos() * radius)
+        })
+        .collect();
+
+    for (i, &position) in positions.iter().enumerate() {
+        vertices.push(OnlyTwoDPositionVertex { position, _padding: 0.0 });
+        if i > 0 {
+            indices.extend_from_slice(&[0, i as u32, (i + 1) as u32 % positions.len() as u32]);
+            edge_queue.push_back((i - 1, i));
+        }
     }
+    edge_queue.push_back((positions.len() - 1, 0)); // Close the loop
 
     while !edge_queue.is_empty() && vertices.len() < num_points {
-        let (p1, p2) = edge_queue.remove(0);
+        let (p1, p2) = edge_queue.pop_front().unwrap();
         let mut mid = mid_point(vertices[p1].position, vertices[p2].position);
         extend_to_circle(&mut mid, radius);
         let mid_index = vertices.len();
-        vertices.push(OnlyTwoDPositionVertex { position: mid, _padding: 0.0});
-        indices.append(&mut vec![p1 as u32, mid_index as u32, p2 as u32]);
-        edge_queue.push((p1, mid_index));
-        edge_queue.push((mid_index, p2));
+        vertices.push(OnlyTwoDPositionVertex { position: mid, _padding: 0.0 });
+        indices.extend_from_slice(&[p1 as u32, mid_index as u32, p2 as u32]);
+        edge_queue.push_back((p1, mid_index));
+        edge_queue.push_back((mid_index, p2));
     }
 
     (vertices, indices)

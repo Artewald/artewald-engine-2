@@ -1,4 +1,4 @@
-use std::{collections::{hash_map, HashMap}, ffi::CString, sync::{Arc, RwLock}};
+use std::{collections::{hash_map, HashMap}, ffi::CString, sync::{Arc, RwLock}, time::Instant};
 
 use ash::vk;
 use graphics_objects::{TextureResource, UniformBufferObject, UniformBufferResource};
@@ -57,11 +57,18 @@ fn main() {
     //     descriptor_set_layout: None,
     // }));
     
-    let num_vertices = 100_000;
+    let num_vertices = 500_000;
 
+    println!("1");
     let (vertices_one, indices_one) = generate_circle_type_one(1.0, num_vertices);
+    println!("2");
     let (vertices_two, indices_two) = generate_circle_type_two(1.0, num_vertices);
+    println!("3");
+    let start_time = Instant::now();
+    println!("Start time: {:?}", start_time.elapsed().as_secs_f32());
     let (vertices_three, indices_three) = generate_circle_type_three(1.0, num_vertices);
+    println!("End time: {:?}", start_time.elapsed().as_secs_f32());
+    println!("4");
 
     let obj_one = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
         vertices: vertices_one,
