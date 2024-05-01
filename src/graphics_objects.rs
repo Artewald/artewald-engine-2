@@ -4,7 +4,7 @@ use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, Des
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
-use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, VkController}};
+use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, VkController}};
 
 macro_rules! free_allocations_add_error_string {
     ($allocator: expr, $allocations: expr, $error_string: expr) => {
@@ -148,7 +148,7 @@ pub struct ObjectToRender<T: Vertex> {
 
 
 impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
-    pub fn new(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, original_object: Arc<RwLock<dyn GraphicsObject<T>>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+    pub fn new(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, original_object: Arc<RwLock<dyn GraphicsObject<T>>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, sampler_manager: &mut SamplerManager, swapchain_extent: vk::Extent2D, pipeline_manager: &mut PipelineManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let original_object_locked = original_object.write().unwrap();
         
         let vertices = original_object_locked.get_vertices();
@@ -166,8 +166,8 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                 free_allocations_add_error_string!(allocator, vec![vertex_allocation], error_str);
                 return Err(Cow::from(error_str));
             },
-        
         };
+
         let mut descriptor_set_layout_bindings: Vec<DescriptorSetLayoutBinding> = Vec::with_capacity(original_object_locked.get_resources().len());
         let mut extra_resource_allocations: Vec<ResourceAllocation> = Vec::with_capacity(original_object_locked.get_resources().len());
         for (id, res) in original_object_locked.get_resources() {
@@ -234,7 +234,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             None => return Err("No vertices found when trying to create graphics object for rendering".into()),
         };
 
-        let pipeline_config = PipelineConfig::new(
+        let mut wanted_pipeline_config = PipelineConfig::new(
             device, 
             original_object_locked.get_shader_infos(),
             vertex_sample.get_input_binding_description(),
@@ -246,13 +246,15 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             allocator,
         )?;
 
-        let descriptor_sets = Self::create_descriptor_set(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout(), &extra_resource_allocations, vk_controller::VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+        pipeline_manager.get_or_create_pipeline(&mut wanted_pipeline_config, device, &swapchain_extent, allocator);
+
+        let descriptor_sets = Self::create_descriptor_set(device, descriptor_pool, wanted_pipeline_config.borrow_descriptor_set_layout().unwrap(), &extra_resource_allocations, vk_controller::VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
         Ok(Self {
             vertex_allocation: Some(vertex_allocation),
             index_allocation: Some(index_allocation),
             extra_resource_allocations,
-            pipeline_config,
+            pipeline_config: wanted_pipeline_config,
             original_object: original_object.clone(),
             descriptor_sets,
         })

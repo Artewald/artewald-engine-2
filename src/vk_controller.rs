@@ -858,9 +858,19 @@ impl VkController {
 
         for (object_to_remove, counter) in self.objects_to_remove.iter_mut() {
             if *counter >= Self::MAX_FRAMES_IN_FLIGHT {
-                self.objects_to_render.remove(object_to_remove);
+                let otr = self.objects_to_render.remove(object_to_remove);
+                match otr {
+                    Some((_, mut renderable)) => {
+                        match renderable.cleanup(&self.device, &mut self.allocator) {
+                            Ok(_) => (),
+                            Err(_) => println!("Failed to cleanup renderable!"),
+                        };
+                    },
+                    None => println!("Failed to remove object from objects to render! There was no such object!"),
+                }
             }
         }
+
         self.objects_to_remove.retain(|(_, counter)| *counter < Self::MAX_FRAMES_IN_FLIGHT);
 
         let mut buffer_counter = 0;
@@ -1149,7 +1159,7 @@ impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkCo
                 return Err("Failed to generate a unique object ID!".into());
             }
         }
-        let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_object, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, &mut self.allocator)?);
+        let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_object, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, self.swapchain_extent, &mut self.graphics_pipeline_manager, &mut self.allocator)?);
         self.objects_to_render.insert(object_id, (object_to_render.get_pipeline_config(), object_to_render));
         Ok(object_id)
     }

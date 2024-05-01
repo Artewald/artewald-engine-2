@@ -36,7 +36,8 @@ pub struct PipelineConfig {
     msaa_samples: vk::SampleCountFlags,
     swapchain_format: vk::Format,
     depth_format: vk::Format,
-    descriptor_set_layout: vk::DescriptorSetLayout,
+    descriptor_set_layout_bindings: Vec<vk::DescriptorSetLayoutBinding>,
+    descriptor_set_layout: Option<vk::DescriptorSetLayout>,
     pipeline_layout: Option<vk::PipelineLayout>,
 }
 
@@ -57,8 +58,6 @@ impl PipelineConfig {
             }
         }
 
-        let descriptor_set_layout = Self::create_descriptor_set_layout(device, descriptor_set_layout_bindings, allocator);
-
         Ok(PipelineConfig {
             shaders,
             vertex_binding_info,
@@ -66,7 +65,8 @@ impl PipelineConfig {
             msaa_samples,
             swapchain_format,
             depth_format,
-            descriptor_set_layout,
+            descriptor_set_layout_bindings: descriptor_set_layout_bindings.to_vec(),
+            descriptor_set_layout: None,
             pipeline_layout: None,
         })
     }
@@ -145,7 +145,7 @@ impl PipelineConfig {
             s_type: StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             depth_clamp_enable: vk::FALSE,
             rasterizer_discard_enable: vk::FALSE,
-            polygon_mode: vk::PolygonMode::LINE,
+            polygon_mode: vk::PolygonMode::FILL,
             line_width: 1.0,
             cull_mode: vk::CullModeFlags::BACK,
             front_face: vk::FrontFace::COUNTER_CLOCKWISE,
@@ -203,7 +203,7 @@ impl PipelineConfig {
         };
 
         let descriptor_set_layout = self.descriptor_set_layout;
-        let pipeline_layout = self.get_or_create_pipeline_layout(device, &descriptor_set_layout, allocator);
+        let pipeline_layout = self.get_or_create_pipeline_layout(device, allocator);
 
         // let render_pass = self.create_render_pass(device, allocator);
 
@@ -280,12 +280,12 @@ impl PipelineConfig {
         }
     }
 
-    fn get_or_create_pipeline_layout(&mut self, device: &Device, descriptor_set_layout: &vk::DescriptorSetLayout, allocator: &mut VkAllocator) -> vk::PipelineLayout {
+    fn get_or_create_pipeline_layout(&mut self, device: &Device, allocator: &mut VkAllocator) -> vk::PipelineLayout {
         if self.pipeline_layout.is_some() {
             return self.pipeline_layout.unwrap();
         }
 
-        let descriptor_set_layouts = [*descriptor_set_layout];
+        let descriptor_set_layouts = [self.get_or_create_descriptor_set_layout(device, allocator)];
         let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
             s_type: StructureType::PIPELINE_LAYOUT_CREATE_INFO,
             set_layout_count: 1,
@@ -294,15 +294,18 @@ impl PipelineConfig {
             p_push_constant_ranges: std::ptr::null(),
             ..Default::default()
         };
-        println!("Creating pipeline layout");
         self.pipeline_layout = Some(unsafe {
             device.create_pipeline_layout(&pipeline_layout_create_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap());
         self.pipeline_layout.unwrap()
     }
 
-    fn create_descriptor_set_layout(device: &Device, descriptor_set_layout_bindings: &[vk::DescriptorSetLayoutBinding], allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
-        let layout_bindings = descriptor_set_layout_bindings.clone();
+    fn get_or_create_descriptor_set_layout(&mut self, device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
+        if self.descriptor_set_layout.is_some() {
+            return self.descriptor_set_layout.unwrap();
+        }
+        
+        let layout_bindings = self.descriptor_set_layout_bindings.clone();
 
         let layout_info = vk::DescriptorSetLayoutCreateInfo {
             s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -311,13 +314,15 @@ impl PipelineConfig {
             ..Default::default()
         };
 
-        unsafe {
+        self.descriptor_set_layout = Some(unsafe {
             device.create_descriptor_set_layout(&layout_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
+        }.unwrap());
+
+        self.descriptor_set_layout.unwrap()
     }
 
-    pub fn borrow_descriptor_set_layout(&self) -> &vk::DescriptorSetLayout {
-        &self.descriptor_set_layout
+    pub fn borrow_descriptor_set_layout(&self) -> Option<&vk::DescriptorSetLayout> {
+        self.descriptor_set_layout.as_ref()
     }
 
     pub fn get_pipeline_layout(&self) -> Option<vk::PipelineLayout> {
@@ -337,7 +342,15 @@ impl PartialEq for PipelineConfig {
         self.msaa_samples == other.msaa_samples &&
         self.swapchain_format == other.swapchain_format &&
         self.depth_format == other.depth_format &&
-        self.descriptor_set_layout == other.descriptor_set_layout
+        self.descriptor_set_layout_bindings.iter().all(|binding| other.descriptor_set_layout_bindings.iter().any(|binding2| {
+            binding.binding == binding2.binding &&
+            binding.descriptor_type == binding2.descriptor_type &&
+            binding.descriptor_count == binding2.descriptor_count &&
+            binding.stage_flags == binding2.stage_flags &&
+            binding.p_immutable_samplers == binding2.p_immutable_samplers
+        })) &&
+        self.descriptor_set_layout_bindings.len() == other.descriptor_set_layout_bindings.len() //&&
+        // self.descriptor_set_layout == other.descriptor_set_layout
     }
 }
 
@@ -357,11 +370,13 @@ impl PipelineManager {
     pub fn get_or_create_pipeline(&mut self, pipeline_config: &mut PipelineConfig, device: &Device, swapchain_extent: &vk::Extent2D, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
         if let Some((p_config, pipeline)) = self.graphics_pipelines.iter().find(|(config, _)| config == pipeline_config) {
             if pipeline_config.pipeline_layout.is_none() {
-                // This is needed because some new objects with the same pipeline layout might be added, so we need to update their pipeline layout
+                // This is needed because some new objects with the same pipeline layout might be added, so we need to update their pipeline layout and descriptor_set_layout
                 pipeline_config.pipeline_layout = Some(p_config.pipeline_layout.unwrap());
+                pipeline_config.descriptor_set_layout = Some(p_config.descriptor_set_layout.unwrap());
             }
             Ok(*pipeline)
         } else {
+            println!("Did not find the pipeline in the list, creating a new one");
             let pipeline = pipeline_config.create_graphics_pipeline(device, swapchain_extent, self.render_pass.unwrap(), allocator)?;
             self.graphics_pipelines.push((pipeline_config.clone(), pipeline));
             Ok(pipeline)
@@ -373,7 +388,7 @@ impl PipelineManager {
             unsafe {
                 device.destroy_pipeline(*pipeline, Some(&allocator.get_allocation_callbacks()));
                 device.destroy_pipeline_layout(config.pipeline_layout.unwrap(), Some(&allocator.get_allocation_callbacks()));
-                device.destroy_descriptor_set_layout(config.descriptor_set_layout, Some(&allocator.get_allocation_callbacks()));
+                device.destroy_descriptor_set_layout(config.descriptor_set_layout.unwrap(), Some(&allocator.get_allocation_callbacks()));
                 // device.destroy_descriptor_set_layout(config.descriptor_set_layout.unwrap(), Some(&allocator.get_allocation_callbacks()));
             }
         }

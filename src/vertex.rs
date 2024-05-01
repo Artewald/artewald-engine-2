@@ -209,45 +209,61 @@ pub fn generate_circle_type_two(radius: f32, num_points: usize) -> (Vec<OnlyTwoD
     indices.push(num_points as u32 / 2 - 1);
     indices.push(num_points as u32 / 2 + 1);
 
-    println!("{:?}", indices.len());
-
     // indices.reverse();
     (vertices, indices)
 }
 
 pub fn generate_circle_type_three(radius: f32, num_points: usize) -> (Vec<OnlyTwoDPositionVertex>, Vec<u32>) {
-    let points = calculate_circle_points(radius, num_points);
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    
-    for point in points {
-        vertices.push(OnlyTwoDPositionVertex { position: point, _padding: 0.0});
+
+    let mut edge_queue = Vec::new();
+
+    if num_points % 3 == 0 {
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(0.0, radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(120f32.to_radians().sin() * radius, 120f32.to_radians().cos() * radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(240f32.to_radians().sin() * radius, 240f32.to_radians().cos() * radius), _padding: 0.0});
+        indices.append(&mut vec![0, 1, 2]);
+        edge_queue.append(&mut vec![(0, 1), (1, 2), (2, 0)]);
+    } else if num_points % 3 == 1 {
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(0.0, radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(90f32.to_radians().sin() * radius, 90f32.to_radians().cos() * radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(180f32.to_radians().sin() * radius, 180f32.to_radians().cos() * radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(270f32.to_radians().sin() * radius, 270f32.to_radians().cos() * radius), _padding: 0.0});
+        indices.append(&mut vec![0, 1, 2, 0, 2, 3]);
+        edge_queue.append(&mut vec![(0, 1), (1, 2), (2, 3), (3, 0)]);
+    } else if num_points % 3 == 2 {
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(0.0, radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(60f32.to_radians().sin() * radius, 60f32.to_radians().cos() * radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(120f32.to_radians().sin() * radius, 120f32.to_radians().cos() * radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(180f32.to_radians().sin() * radius, 180f32.to_radians().cos() * radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(240f32.to_radians().sin() * radius, 240f32.to_radians().cos() * radius), _padding: 0.0});
+        vertices.push(OnlyTwoDPositionVertex { position: glm::Vec2::new(300f32.to_radians().sin() * radius, 300f32.to_radians().cos() * radius), _padding: 0.0});
+        indices.append(&mut vec![0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 5]);
+        edge_queue.append(&mut vec![(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 0)]);
     }
 
-    for i in (0..(num_points as u32 - 2)).step_by(2) {
-        indices.push(i);
-        indices.push(i + 2);
-        indices.push(i + 1);
+    while !edge_queue.is_empty() && vertices.len() < num_points {
+        let (p1, p2) = edge_queue.remove(0);
+        let mut mid = mid_point(vertices[p1].position, vertices[p2].position);
+        extend_to_circle(&mut mid, radius);
+        let mid_index = vertices.len();
+        vertices.push(OnlyTwoDPositionVertex { position: mid, _padding: 0.0});
+        indices.append(&mut vec![p1 as u32, mid_index as u32, p2 as u32]);
+        edge_queue.push((p1, mid_index));
+        edge_queue.push((mid_index, p2));
     }
-    indices.push(num_points as u32 - 2);
-    indices.push(0);
-    indices.push(num_points as u32 - 1);
-
-    let num_levels = (num_points as f64 / 4.0).ceil() as u32 - 1;
-    for i in 1..=num_levels {
-        let step_by = i * 2;
-        let num_triangles_in_level = (num_points as f64 / (3.0 * i as f64)).ceil() as usize - 1;
-        let mut index = 0;
-        for _ in 0..num_triangles_in_level as u32 {
-            indices.push(index % num_points as u32);
-            indices.push((index + step_by * 2) % num_points as u32);
-            indices.push((index + step_by) % num_points as u32);
-            index += step_by * 2;
-        }
-    }
-
 
     (vertices, indices)
+}
+
+fn mid_point(p1: glm::Vec2, p2: glm::Vec2) -> glm::Vec2 {
+    glm::Vec2::new((p1.x + p2.x) / 2.0, (p1.y + p2.y) / 2.0)
+}
+
+fn extend_to_circle(p1: &mut glm::Vec2, radius: f32) {
+    let length = (p1.x * p1.x + p1.y * p1.y).sqrt();
+    *p1 = glm::Vec2::new(p1.x / length * radius, p1.y / length * radius);
 }
 
 fn calculate_circle_points(radius: f32, num_points: usize) -> Vec<glm::Vec2> {

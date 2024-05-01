@@ -57,7 +57,7 @@ fn main() {
     //     descriptor_set_layout: None,
     // }));
     
-    let num_vertices = 12;
+    let num_vertices = 100_000;
 
     let (vertices_one, indices_one) = generate_circle_type_one(1.0, num_vertices);
     let (vertices_two, indices_two) = generate_circle_type_two(1.0, num_vertices);
