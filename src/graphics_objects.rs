@@ -4,7 +4,7 @@ use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, Des
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
-use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, VkController}};
+use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VkController}};
 
 macro_rules! free_allocations_add_error_string {
     ($allocator: expr, $allocations: expr, $error_string: expr) => {
@@ -121,15 +121,11 @@ pub trait GraphicsObject<T: Vertex> {
     fn get_indices(&self) -> Vec<u32>;
     fn get_resources(&self) -> Vec<(ResourceID, Arc<RwLock<dyn GraphicsResource>>)>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
+    fn get_vertices_and_indices_hash(&self) -> u64;
 }
 
 pub trait Renderable {
-    fn take_vertex_allocation(&mut self) -> AllocationInfo;
-    fn take_index_allocation(&mut self) -> AllocationInfo;
     fn take_extra_resource_allocations(&mut self) -> Vec<ResourceAllocation>;
-    fn borrow_vertex_allocation(&self) -> Option<&AllocationInfo>;
-    fn borrow_index_allocation(&self) -> Option<&AllocationInfo>;
-    fn get_num_indecies(&self) -> usize;
     fn borrow_extra_resource_allocations(&self) -> Vec<(u32, vk::DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)>;
     fn get_pipeline_config(&self) -> PipelineConfig;
     fn borrow_descriptor_sets(&self) -> &[DescriptorSet];
@@ -138,8 +134,6 @@ pub trait Renderable {
 }
 
 pub struct ObjectToRender<T: Vertex> {
-    vertex_allocation: Option<AllocationInfo>,
-    index_allocation: Option<AllocationInfo>,
     extra_resource_allocations: Vec<ResourceAllocation>,
     pipeline_config: PipelineConfig,
     original_object: Arc<RwLock<dyn GraphicsObject<T>>>,
@@ -151,22 +145,22 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
     pub fn new(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, original_object: Arc<RwLock<dyn GraphicsObject<T>>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, sampler_manager: &mut SamplerManager, swapchain_extent: vk::Extent2D, pipeline_manager: &mut PipelineManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let original_object_locked = original_object.write().unwrap();
         
-        let vertices = original_object_locked.get_vertices();
-        let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
-        let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertex_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
-            Ok(alloc) => alloc,
-            Err(e) => return Err(Cow::from(e)),
-        };
-        let indices = original_object_locked.get_indices();
-        let index_data = indices.iter().map(|i| i.to_ne_bytes()).flatten().collect::<Vec<u8>>();
-        let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &index_data, vk::BufferUsageFlags::INDEX_BUFFER, false) {
-            Ok(alloc) => alloc,
-            Err(e) => {
-                let mut error_str = e.to_string();
-                free_allocations_add_error_string!(allocator, vec![vertex_allocation], error_str);
-                return Err(Cow::from(error_str));
-            },
-        };
+        // let vertices = original_object_locked.get_vertices();
+        // let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
+        // let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertex_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
+        //     Ok(alloc) => alloc,
+        //     Err(e) => return Err(Cow::from(e)),
+        // };
+        // let indices = original_object_locked.get_indices();
+        // let index_data = indices.iter().map(|i| i.to_ne_bytes()).flatten().collect::<Vec<u8>>();
+        // let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &index_data, vk::BufferUsageFlags::INDEX_BUFFER, false) {
+        //     Ok(alloc) => alloc,
+        //     Err(e) => {
+        //         let mut error_str = e.to_string();
+        //         free_allocations_add_error_string!(allocator, vec![vertex_allocation], error_str);
+        //         return Err(Cow::from(error_str));
+        //     },
+        // };
 
         let mut descriptor_set_layout_bindings: Vec<DescriptorSetLayoutBinding> = Vec::with_capacity(original_object_locked.get_resources().len());
         let mut extra_resource_allocations: Vec<ResourceAllocation> = Vec::with_capacity(original_object_locked.get_resources().len());
@@ -178,7 +172,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                         Ok(alloc) => alloc,
                         Err(e) => {
                             let mut error_str = e.to_string();
-                            free_allocations_add_error_string!(allocator, vec![vertex_allocation, index_allocation], error_str);
+                            // free_allocations_add_error_string!(allocator, vec![vertex_allocation, index_allocation], error_str);
                             return Err(Cow::from(error_str));
                         },
                     };
@@ -190,7 +184,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                         Ok(alloc) => alloc,
                         Err(e) => {
                             let mut error_str = e.to_string();
-                            free_allocations_add_error_string!(allocator, vec![vertex_allocation, index_allocation], error_str);
+                            // free_allocations_add_error_string!(allocator, vec![vertex_allocation, index_allocation], error_str);
                             return Err(Cow::from(error_str));
                         },
                     };
@@ -200,7 +194,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                         Ok(_) => (),
                         Err(e) => {
                             let mut error_str = e.to_string();
-                            free_allocations_add_error_string!(allocator, vec![vertex_allocation, index_allocation, allocation], error_str);
+                            free_allocations_add_error_string!(allocator, vec![allocation], error_str);
                             return Err(Cow::from(error_str));
                         },
                     }
@@ -229,7 +223,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
             }
         }
 
-        let vertex_sample = match vertices.first() {
+        let vertex_sample = match original_object_locked.get_vertices().first() {
             Some(v) => v.clone(),
             None => return Err("No vertices found when trying to create graphics object for rendering".into()),
         };
@@ -251,8 +245,8 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
         let descriptor_sets = Self::create_descriptor_set(device, descriptor_pool, wanted_pipeline_config.borrow_descriptor_set_layout().unwrap(), &extra_resource_allocations, vk_controller::VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
         Ok(Self {
-            vertex_allocation: Some(vertex_allocation),
-            index_allocation: Some(index_allocation),
+            // vertex_allocation: Some(vertex_allocation),
+            // index_allocation: Some(index_allocation),
             extra_resource_allocations,
             pipeline_config: wanted_pipeline_config,
             original_object: original_object.clone(),
@@ -264,6 +258,38 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 
     pub fn get_pipeline_config(&self) -> PipelineConfig {
         self.pipeline_config.clone()
+    }
+
+    pub fn get_vertices_and_indices_hash(&self) -> u64 {
+        let original_object_locked = self.original_object.read().unwrap();
+        original_object_locked.get_vertices_and_indices_hash()
+    }
+
+    pub fn create_vertex_and_index_allocation(&self, command_pool: &CommandPool,graphics_queue: &Queue, allocator: &mut VkAllocator) -> Result<(AllocationInfo, AllocationInfo), Cow<'static, str>> {
+        let original_object_locked = self.original_object.read().unwrap();
+        let vertices = original_object_locked.get_vertices();
+        let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
+        let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertex_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
+            Ok(alloc) => alloc,
+            Err(e) => return Err(Cow::from(e)),
+        };
+        let indices = original_object_locked.get_indices();
+        let index_data = indices.iter().map(|i| i.to_ne_bytes()).flatten().collect::<Vec<u8>>();
+        let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &index_data, vk::BufferUsageFlags::INDEX_BUFFER, false) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                let mut error_str = e.to_string();
+                free_allocations_add_error_string!(allocator, vec![vertex_allocation], error_str);
+                return Err(Cow::from(error_str));
+            },
+        };
+
+        Ok((vertex_allocation, index_allocation))
+    }
+
+    pub fn get_num_indices(&self) -> usize {
+        let original_object_locked = self.original_object.read().unwrap();
+        original_object_locked.get_indices().len()
     }
 
     fn create_descriptor_set(device: &Device, descriptor_pool: &DescriptorPool, descriptor_set_layout: &DescriptorSetLayout, resource_allocations: &[ResourceAllocation], frames_in_flight: u32, allocator: &mut VkAllocator) -> Vec<DescriptorSet> {
@@ -356,33 +382,12 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 }
 
 impl<T: Vertex> Renderable for ObjectToRender<T> {
-    fn take_vertex_allocation(&mut self) -> AllocationInfo {
-        self.vertex_allocation.take().unwrap()
-    }
-
-    fn take_index_allocation(&mut self) -> AllocationInfo {
-        self.index_allocation.take().unwrap()
-    }
-
     fn borrow_extra_resource_allocations(&self) -> Vec<(u32, DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)> {
         self.extra_resource_allocations.iter().map(|(id, binding, alloc, descriptor_type, sampler)| (*id, *binding, alloc, *descriptor_type, *sampler)).collect()
     }
 
     fn get_pipeline_config(&self) -> PipelineConfig {
         self.pipeline_config.clone()
-    }
-    
-    fn get_num_indecies(&self) -> usize {
-        let original_object = self.original_object.read().unwrap();
-        original_object.get_indices().len()
-    }
-    
-    fn borrow_vertex_allocation(&self) -> Option<&AllocationInfo> {
-        self.vertex_allocation.as_ref()
-    }
-    
-    fn borrow_index_allocation(&self) -> Option<&AllocationInfo> {
-        self.index_allocation.as_ref()
     }
     
     fn take_extra_resource_allocations(&mut self) -> Vec<ResourceAllocation> {
@@ -394,15 +399,6 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
     }
     
     fn cleanup(&mut self, device: &Device, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
-        // vertex_allocation: Option<AllocationInfo>,
-        // index_allocation: Option<AllocationInfo>,
-        // extra_resource_allocations: Vec<ResourceAllocation>,
-        // pipeline_config: PipelineConfig,
-        // original_object: Arc<dyn GraphicsObject<T>>,
-        // descriptor_sets: Vec<DescriptorSet>,
-
-        allocator.free_memory_allocation(self.take_vertex_allocation())?;
-        allocator.free_memory_allocation(self.take_index_allocation())?;
         for (_, _, allocation, _, _) in self.take_extra_resource_allocations() {
             allocator.free_memory_allocation(allocation)?;
         }

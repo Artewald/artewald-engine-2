@@ -57,7 +57,7 @@ fn main() {
     //     descriptor_set_layout: None,
     // }));
     
-    let num_vertices = 500_000;
+    let num_vertices = 49152*4;
 
     println!("1");
     let (vertices_one, indices_one) = generate_circle_type_one(1.0, num_vertices);
@@ -124,11 +124,10 @@ fn main() {
         descriptor_set_layout: None,
     }));
 
-    let mut current_object_id = vk_controller.add_object_to_render(obj_one.clone()).unwrap();
+    let mut current_object_id = vk_controller.add_object_to_render(obj_three.clone()).unwrap();
 
     let mut frame_count = 0;
     let mut last_fps_print = std::time::Instant::now();
-    // let start_time = std::time::Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;

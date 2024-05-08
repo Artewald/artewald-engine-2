@@ -8,6 +8,9 @@ use crate::{graphics_objects::{GraphicsObject, ObjectToRender, Renderable, Unifo
 
 type ObjectID = usize;
 type FrameCounter = usize;
+type VerticesIndicesHash = u64;
+pub type VertexAllocation = AllocationInfo;
+pub type IndexAllocation = AllocationInfo;
 
 #[cfg(debug_assertions)]
 const IS_DEBUG_MODE: bool = true;
@@ -44,7 +47,9 @@ pub struct VkController {
     // indices: Vec<u32>,
     // vertex_allocation: Option<AllocationInfo>,
     // index_allocation: Option<AllocationInfo>,
-    objects_to_render: HashMap<ObjectID, (PipelineConfig, Box<dyn Renderable>)>,
+    object_id_to_pipeline: HashMap<ObjectID, PipelineConfig>,
+    object_id_to_vertices_indices_hash: HashMap<ObjectID, VerticesIndicesHash>,
+    objects_to_render: HashMap<(PipelineConfig, VerticesIndicesHash), ObjectsToRender>,
     uniform_allocation: Option<AllocationInfo>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
@@ -178,6 +183,8 @@ impl VkController {
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
+            object_id_to_vertices_indices_hash: HashMap::new(),
+            object_id_to_pipeline: HashMap::new(),
             objects_to_render,
             uniform_allocation: Some(uniform_allocation),
             current_frame: 0,
@@ -466,11 +473,15 @@ impl VkController {
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
-            for (_, (_, mut renderable)) in self.objects_to_render.drain() {
-                match renderable.cleanup(&self.device, &mut self.allocator) {
-                    Ok(_) => (),
-                    Err(_) => todo!(),
-                };
+            for (_, mut objects_to_render) in self.objects_to_render.drain() {
+                self.allocator.free_memory_allocation(objects_to_render.vertex_allocation.take().unwrap()).unwrap();
+                self.allocator.free_memory_allocation(objects_to_render.index_allocation.take().unwrap()).unwrap();
+                for (_, mut renderable) in objects_to_render.objects {
+                    match renderable.cleanup(&self.device, &mut self.allocator) {
+                        Ok(_) => (),
+                        Err(_) => todo!(),
+                    };
+                }
             }
             
             self.graphics_pipeline_manager.destroy(&self.device, &mut self.allocator);
@@ -760,7 +771,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &[vk::DescriptorSet], current_frame: usize, num_indices: u32) {
+    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets_for_current_frame: &[vk::DescriptorSet], current_frame: usize, num_indices: u32) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -806,7 +817,7 @@ impl VkController {
 
         let vertex_buffers = [vertex_allocation.get_buffer().unwrap()];
         let offsets = [0_u64];
-        
+
         unsafe {
             device.cmd_begin_render_pass(*command_buffer, &render_pass_info, vk::SubpassContents::INLINE);
             device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *graphics_pipeline);
@@ -814,8 +825,8 @@ impl VkController {
             device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
             device.cmd_bind_index_buffer(*command_buffer, index_allocation.get_buffer().unwrap(), 0, vk::IndexType::UINT32);
-            device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline_layout, 0, &[descriptor_sets[current_frame]], &[]);
-            device.cmd_draw_indexed(*command_buffer, num_indices, 1, 0, 0, 0);
+            device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline_layout, 0, descriptor_sets_for_current_frame, &[]);
+            device.cmd_draw_indexed(*command_buffer, num_indices, descriptor_sets_for_current_frame.len() as u32, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)
         }.unwrap();
@@ -856,17 +867,27 @@ impl VkController {
             self.command_buffers[self.current_frame] = Self::create_command_buffers(&self.device, &self.command_pool, self.objects_to_render.len() as u32);
         }
 
-        for (object_to_remove, counter) in self.objects_to_remove.iter_mut() {
+        for (object_id_to_remove, counter) in self.objects_to_remove.iter_mut() {
+            let config = self.object_id_to_pipeline.get(object_id_to_remove).expect("Failed to get pipeline config for object to remove! This should never happen!").clone();
+            let vih = *self.object_id_to_vertices_indices_hash.get(object_id_to_remove).expect("Failed to get vertices and indices hash for object to remove! This should never happen!");
             if *counter >= Self::MAX_FRAMES_IN_FLIGHT {
-                let otr = self.objects_to_render.remove(object_to_remove);
-                match otr {
-                    Some((_, mut renderable)) => {
-                        match renderable.cleanup(&self.device, &mut self.allocator) {
+                let otrs = self.objects_to_render.get_mut(&(config.clone(), vih)).expect("Failed to get objects after pipeline was received! This should never happen!");
+                otrs.objects.retain_mut(|(id, object)| {
+                    let is_object_to_remove = id == object_id_to_remove;
+                    if is_object_to_remove {
+                        match object.cleanup(&self.device, &mut self.allocator) {
                             Ok(_) => (),
                             Err(_) => println!("Failed to cleanup renderable!"),
                         };
-                    },
-                    None => println!("Failed to remove object from objects to render! There was no such object!"),
+                        self.object_id_to_vertices_indices_hash.remove(object_id_to_remove);
+                        self.object_id_to_pipeline.remove(object_id_to_remove);
+                    }
+                    !is_object_to_remove
+                });
+                if otrs.objects.is_empty() {
+                    self.allocator.free_memory_allocation(otrs.vertex_allocation.take().unwrap()).expect("Failed to free vertex allocation!");
+                    self.allocator.free_memory_allocation(otrs.index_allocation.take().unwrap()).expect("Failed to free index allocation!");
+                    self.objects_to_render.remove(&(config, vih));
                 }
             }
         }
@@ -874,22 +895,33 @@ impl VkController {
         self.objects_to_remove.retain(|(_, counter)| *counter < Self::MAX_FRAMES_IN_FLIGHT);
 
         let mut buffer_counter = 0;
-        'outer: for (object_id, otr) in self.objects_to_render.iter_mut() {
-            for (object_to_remove, counter) in self.objects_to_remove.iter_mut() {
-                if object_id == object_to_remove {
-                    *counter += 1;
-                    continue 'outer;
+        for ((p_c, _), objects) in self.objects_to_render.iter_mut() {
+            let mut descriptor_sets = Vec::with_capacity(objects.objects.len()); // TODO: This will allocate more memory than needed if objects are to be removed
+            for (object_id, obj) in objects.objects.iter_mut() {
+                if self.objects_to_remove.iter_mut().any(|(object_to_remove, counter)| {
+                    if *object_id == *object_to_remove {
+                        *counter += 1;
+                        return true;
+                    }
+                    false
+                }) {
+                    continue;
                 }
+                obj.update_extra_resource_allocations(&self.device, self.current_frame, &mut self.allocator).unwrap();
+                descriptor_sets.push(obj.borrow_descriptor_sets()[self.current_frame]);
             }
 
-            otr.1.update_extra_resource_allocations(&self.device, self.current_frame, &mut self.allocator).unwrap();
-
+            if descriptor_sets.is_empty() {
+                continue;
+            }
+            
             let cmd_buffer = self.command_buffers[self.current_frame][buffer_counter];
             unsafe {
                 self.device.reset_command_buffer(cmd_buffer, vk::CommandBufferResetFlags::empty()).unwrap();
             }
-            let graphics_pipeline = self.graphics_pipeline_manager.get_or_create_pipeline(&mut otr.0, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap();
-            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &graphics_pipeline, otr.1.borrow_vertex_allocation().unwrap(), otr.1.borrow_index_allocation().unwrap(), &otr.0.get_pipeline_layout().unwrap(), otr.1.borrow_descriptor_sets(), self.current_frame, otr.1.get_num_indecies() as u32);
+            let mut pipeline_config = p_c.clone();
+            let graphics_pipeline = self.graphics_pipeline_manager.get_or_create_pipeline(&mut pipeline_config, &self.device, &self.swapchain_extent, &mut self.allocator).unwrap();
+            Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &graphics_pipeline, objects.vertex_allocation.as_ref().unwrap(), objects.index_allocation.as_ref().unwrap(), &pipeline_config.get_pipeline_layout().unwrap(), &descriptor_sets, self.current_frame, objects.num_indices);
             buffer_counter += 1;
         }
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
@@ -1149,10 +1181,10 @@ impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkCo
         if self.objects_to_render.len() >= Self::MAX_OBJECTS {
             return Err("Maximum number of objects to render has been reached!".into());
         }
-        
+        //todo!("ObjectID to pipeline mapping is not implemented! + VerticesIndices needs to be added");
         let mut object_id = rand::random::<ObjectID>();
         let mut counter = 0;
-        while self.objects_to_render.contains_key(&object_id) {
+        while self.object_id_to_pipeline.contains_key(&object_id) {
             object_id = rand::random::<ObjectID>();
             counter += 1;
             if counter > 1000 {
@@ -1160,7 +1192,27 @@ impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkCo
             }
         }
         let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_object, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, self.swapchain_extent, &mut self.graphics_pipeline_manager, &mut self.allocator)?);
-        self.objects_to_render.insert(object_id, (object_to_render.get_pipeline_config(), object_to_render));
+        let pipeline_config = object_to_render.get_pipeline_config();
+        let vih = object_to_render.get_vertices_and_indices_hash();
+        self.object_id_to_pipeline.insert(object_id, pipeline_config.clone());
+        self.object_id_to_vertices_indices_hash.insert(object_id, vih);
+        let objects_to_render = self.objects_to_render.entry((pipeline_config, vih)).or_insert({
+            let (vertex_allocation, index_allocation) = object_to_render.create_vertex_and_index_allocation(&self.command_pool, &self.graphics_queue, &mut self.allocator)?;
+            ObjectsToRender {
+                vertex_allocation: Some(vertex_allocation),
+                index_allocation: Some(index_allocation),
+                num_indices: object_to_render.get_num_indices() as u32,
+                objects: Vec::new(),
+            }
+        });
+        objects_to_render.objects.push((object_id, object_to_render));
         Ok(object_id)
     }
+}
+
+struct ObjectsToRender {
+    pub vertex_allocation: Option<VertexAllocation>,
+    pub index_allocation: Option<IndexAllocation>,
+    pub num_indices: u32,
+    pub objects: Vec<(ObjectID, Box<dyn Renderable>)>,
 }

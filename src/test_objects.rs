@@ -1,4 +1,4 @@
-use std::{collections::{hash_map, HashMap}, sync::{Arc, RwLock}};
+use std::{collections::{hash_map, HashMap}, hash::{self, Hash, Hasher}, sync::{Arc, RwLock}};
 use ash::{vk::{DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateFlags, DescriptorSetLayoutCreateInfo, StructureType}, Device};
 use nalgebra_glm as glm;
 
@@ -32,6 +32,13 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
     fn get_shader_infos(&self) -> Vec<ShaderInfo> {
         self.shaders.clone()
     }
+    
+    fn get_vertices_and_indices_hash(&self) -> u64 {
+        let mut hasher = hash::DefaultHasher::new();
+        self.vertices.iter().for_each(|vertex| vertex.hash(&mut hasher));
+        self.indices.iter().for_each(|index| index.hash(&mut hasher));
+        hasher.finish()
+    }
 }
 
 pub struct TwoDPositionSimpleRenderableObject {
@@ -56,5 +63,12 @@ impl GraphicsObject<OnlyTwoDPositionVertex> for TwoDPositionSimpleRenderableObje
 
     fn get_shader_infos(&self) -> Vec<ShaderInfo> {
         self.shaders.clone()
+    }
+    
+    fn get_vertices_and_indices_hash(&self) -> u64 {
+        let mut hasher = hash::DefaultHasher::new();
+        self.vertices.iter().for_each(|vertex| vertex.hash(&mut hasher));
+        self.indices.iter().for_each(|index| index.hash(&mut hasher));
+        hasher.finish()
     }
 }

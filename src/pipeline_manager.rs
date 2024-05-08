@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ffi::CString, fs::read_to_string};
+use std::{borrow::Cow, ffi::CString, fs::read_to_string, hash::{Hash, Hasher}};
 
 use ash::{vk::{self, DescriptorSetLayoutBinding, RenderPass, SampleCountFlags, StructureType, VertexInputAttributeDescription, VertexInputBindingDescription}, Device};
 use image::DynamicImage;
@@ -11,7 +11,7 @@ pub enum GraphicsResourceType {
     Texture(DynamicImage),
 }
 
-pub trait Vertex: Serializable {
+pub trait Vertex: Serializable + Hash {
     fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription;
     fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
 }
@@ -351,6 +351,32 @@ impl PartialEq for PipelineConfig {
         })) &&
         self.descriptor_set_layout_bindings.len() == other.descriptor_set_layout_bindings.len() //&&
         // self.descriptor_set_layout == other.descriptor_set_layout
+    }
+}
+
+impl Hash for PipelineConfig {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.shaders.iter().for_each(|shader| shader.path.hash(state));
+        self.vertex_binding_info.binding.hash(state);
+        self.vertex_binding_info.stride.hash(state);
+        self.vertex_binding_info.input_rate.hash(state);
+        self.vertex_attribute_info.iter().for_each(|attribute| {
+            attribute.location.hash(state);
+            attribute.binding.hash(state);
+            attribute.format.hash(state);
+            attribute.offset.hash(state);
+        });
+        self.msaa_samples.hash(state);
+        self.swapchain_format.hash(state);
+        self.depth_format.hash(state);
+        self.descriptor_set_layout_bindings.iter().for_each(|binding| {
+            binding.binding.hash(state);
+            binding.descriptor_type.hash(state);
+            binding.descriptor_count.hash(state);
+            binding.stage_flags.hash(state);
+            binding.p_immutable_samplers.hash(state);
+        });
+        self.descriptor_set_layout_bindings.len().hash(state);
     }
 }
 
