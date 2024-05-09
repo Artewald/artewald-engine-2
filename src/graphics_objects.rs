@@ -131,6 +131,7 @@ pub trait Renderable {
     fn borrow_descriptor_sets(&self) -> &[DescriptorSet];
     fn cleanup(&mut self, device: &Device, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
     fn update_extra_resource_allocations(&mut self, device: &Device, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
+    fn get_serialized_resources(&self) -> Vec<u8>;
 }
 
 pub struct ObjectToRender<T: Vertex> {
@@ -328,7 +329,6 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
 
                         buffer_infos.push(buffer_info);
                         let buffer_info = buffer_infos.last().unwrap();
-                        
                         vk::WriteDescriptorSet {
                             s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
                             dst_set: descriptor_sets[i as usize],
@@ -342,6 +342,31 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             ..Default::default()
                         }
                     },
+                    DescriptorType::UNIFORM_BUFFER_DYNAMIC => {
+                        let offset = unsafe {allocation_info.get_uniform_pointers()[i as usize].offset_from(allocation_info.get_uniform_pointers()[0])} as u64;
+                        let size = (allocation_info.get_memory_end()-allocation_info.get_memory_start())/allocation_info.get_uniform_pointers().len().max(1) as u64;
+                        let buffer = allocation_info.get_buffer().unwrap();
+                        let buffer_info = DescriptorBufferInfo {
+                            buffer,
+                            offset,
+                            range: size,
+                        };
+
+                        buffer_infos.push(buffer_info);
+                        let buffer_info = buffer_infos.last().unwrap();
+                        vk::WriteDescriptorSet {
+                            s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
+                            dst_set: descriptor_sets[i as usize],
+                            dst_binding: descriptor_set_layout_binding.binding,
+                            dst_array_element: 0,
+                            descriptor_type: DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                            descriptor_count: 1,
+                            p_buffer_info: buffer_info,
+                            p_image_info: std::ptr::null(),
+                            p_texel_buffer_view: std::ptr::null(),
+                            ..Default::default()
+                        }
+                    }, 
                     DescriptorType::COMBINED_IMAGE_SAMPLER => {
                         let image_info = DescriptorImageInfo {
                             sampler: sampler_option.as_ref().unwrap().clone(),

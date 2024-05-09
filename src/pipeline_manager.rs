@@ -145,7 +145,7 @@ impl PipelineConfig {
             s_type: StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
             depth_clamp_enable: vk::FALSE,
             rasterizer_discard_enable: vk::FALSE,
-            polygon_mode: vk::PolygonMode::FILL,
+            polygon_mode: vk::PolygonMode::FILL,//LINE,//
             line_width: 1.0,
             cull_mode: vk::CullModeFlags::BACK,
             front_face: vk::FrontFace::COUNTER_CLOCKWISE,

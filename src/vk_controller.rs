@@ -825,6 +825,7 @@ impl VkController {
             device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
             device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
             device.cmd_bind_index_buffer(*command_buffer, index_allocation.get_buffer().unwrap(), 0, vk::IndexType::UINT32);
+            
             device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline_layout, 0, descriptor_sets_for_current_frame, &[]);
             device.cmd_draw_indexed(*command_buffer, num_indices, descriptor_sets_for_current_frame.len() as u32, 0, 0, 0);
             device.cmd_end_render_pass(*command_buffer);
@@ -1031,9 +1032,13 @@ impl VkController {
                 descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
             },
             vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            },
+            vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
-            }
+            },
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo {
@@ -1181,7 +1186,7 @@ impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkCo
         if self.objects_to_render.len() >= Self::MAX_OBJECTS {
             return Err("Maximum number of objects to render has been reached!".into());
         }
-        //todo!("ObjectID to pipeline mapping is not implemented! + VerticesIndices needs to be added");
+        
         let mut object_id = rand::random::<ObjectID>();
         let mut counter = 0;
         while self.object_id_to_pipeline.contains_key(&object_id) {
@@ -1191,6 +1196,9 @@ impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkCo
                 return Err("Failed to generate a unique object ID!".into());
             }
         }
+        dbg!(self.object_id_to_pipeline.len());
+        dbg!(self.object_id_to_vertices_indices_hash.len());
+        dbg!(self.objects_to_render.len());
         let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_object, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, self.swapchain_extent, &mut self.graphics_pipeline_manager, &mut self.allocator)?);
         let pipeline_config = object_to_render.get_pipeline_config();
         let vih = object_to_render.get_vertices_and_indices_hash();

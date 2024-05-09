@@ -16,118 +16,154 @@ mod vk_allocator;
 mod pipeline_manager;
 mod sampler_manager;
 mod test_objects;
+mod object_manager;
 
 fn main() {
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().with_title("Artewald Engine 2").build(&event_loop).unwrap();
 
     let mut vk_controller = VkController::new(window, "Artewald Engine 2");
-    // let mut swapchain_extent = vk_controller.get_swapchain_extent();
+    let mut swapchain_extent = vk_controller.get_swapchain_extent();
 
-    // let (vertices, indices) = load_model("./assets/objects/viking_room.obj");
+    let (vertices, indices) = load_model("./assets/objects/viking_room.obj");
     
-    // let mut ubo = UniformBufferObject {
-    //     model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-    //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-    //     proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-    // };
-    // ubo.proj[(1, 1)] *= -1.0;
+    let mut ubo1 = UniformBufferObject {
+        model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+        view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+        proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+    };
+    ubo1.proj[(1, 1)] *= -1.0;
 
-    // let obj = Arc::new(RwLock::new(SimpleRenderableObject {
-    //     vertices,
-    //     indices,
-    //     uniform_buffer: Arc::new(RwLock::new(UniformBufferResource { buffer: ubo, binding: 0 })),
-    //     texture: Arc::new(RwLock::new(TextureResource {
-    //         image: image::open("./assets/images/viking_room.png").unwrap(),
-    //         binding: 1,
-    //         stage: vk::ShaderStageFlags::FRAGMENT,
-    //     })),
+    let mut ubo2 = UniformBufferObject {
+        model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+        view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+        proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+    };
+    ubo2.proj[(1, 1)] *= -1.0;
+
+    let obj1 = Arc::new(RwLock::new(SimpleRenderableObject {
+        vertices: vertices.clone(),
+        indices: indices.clone(),
+        uniform_buffer: Arc::new(RwLock::new(UniformBufferResource { buffer: ubo1, binding: 0 })),
+        texture: Arc::new(RwLock::new(TextureResource {
+            image: image::open("./assets/images/viking_room.png").unwrap(),
+            binding: 1,
+            stage: vk::ShaderStageFlags::FRAGMENT,
+        })),
+        shaders: vec![
+            ShaderInfo {
+                path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
+                shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+                entry_point: CString::new("main").unwrap(),
+            },
+            ShaderInfo {
+                path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
+                shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+                entry_point: CString::new("main").unwrap(),
+            }
+        ],
+        descriptor_set_layout: None,
+    }));
+
+    let obj2 = Arc::new(RwLock::new(SimpleRenderableObject {
+        vertices: vertices.clone(),
+        indices: indices.clone(),
+        uniform_buffer: Arc::new(RwLock::new(UniformBufferResource { buffer: ubo2, binding: 0 })),
+        texture: Arc::new(RwLock::new(TextureResource {
+            image: image::open("./assets/images/viking_room.png").unwrap(),
+            binding: 1,
+            stage: vk::ShaderStageFlags::FRAGMENT,
+        })),
+        shaders: vec![
+            ShaderInfo {
+                path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
+                shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+                entry_point: CString::new("main").unwrap(),
+            },
+            ShaderInfo {
+                path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
+                shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+                entry_point: CString::new("main").unwrap(),
+            }
+        ],
+        descriptor_set_layout: None,
+    }));
+
+    vk_controller.add_object_to_render(obj1.clone()).unwrap();
+    vk_controller.add_object_to_render(obj2.clone()).unwrap();
+    
+    // let num_vertices = 12;//49152*4;
+
+    // println!("1");
+    // let (vertices_one, indices_one) = generate_circle_type_one(1.0, num_vertices);
+    // println!("2");
+    // let (vertices_two, indices_two) = generate_circle_type_two(1.0, num_vertices);
+    // println!("3");
+    // let start_time = Instant::now();
+    // println!("Start time: {:?}", start_time.elapsed().as_secs_f32());
+    // let (vertices_three, indices_three) = generate_circle_type_three(1.0, num_vertices);
+    // println!("End time: {:?}", start_time.elapsed().as_secs_f32());
+    // println!("4");
+
+    // let obj_one = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
+    //     vertices: vertices_one,
+    //     indices: indices_one,
     //     shaders: vec![
     //         ShaderInfo {
-    //             path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
+    //             path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
     //             shader_stage_flag: vk::ShaderStageFlags::VERTEX,
     //             entry_point: CString::new("main").unwrap(),
     //         },
     //         ShaderInfo {
-    //             path: std::path::PathBuf::from("./assets/shaders/triangle.frag"),
+    //             path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
     //             shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
     //             entry_point: CString::new("main").unwrap(),
     //         }
     //     ],
     //     descriptor_set_layout: None,
     // }));
-    
-    let num_vertices = 49152*4;
 
-    println!("1");
-    let (vertices_one, indices_one) = generate_circle_type_one(1.0, num_vertices);
-    println!("2");
-    let (vertices_two, indices_two) = generate_circle_type_two(1.0, num_vertices);
-    println!("3");
-    let start_time = Instant::now();
-    println!("Start time: {:?}", start_time.elapsed().as_secs_f32());
-    let (vertices_three, indices_three) = generate_circle_type_three(1.0, num_vertices);
-    println!("End time: {:?}", start_time.elapsed().as_secs_f32());
-    println!("4");
+    // let obj_two = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
+    //     vertices: vertices_two,
+    //     indices: indices_two,
+    //     shaders: vec![
+    //         ShaderInfo {
+    //             path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
+    //             shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+    //             entry_point: CString::new("main").unwrap(),
+    //         },
+    //         ShaderInfo {
+    //             path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
+    //             shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+    //             entry_point: CString::new("main").unwrap(),
+    //         }
+    //     ],
+    //     descriptor_set_layout: None,
+    // }));
 
-    let obj_one = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
-        vertices: vertices_one,
-        indices: indices_one,
-        shaders: vec![
-            ShaderInfo {
-                path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
-                shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-                entry_point: CString::new("main").unwrap(),
-            },
-            ShaderInfo {
-                path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
-                shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-                entry_point: CString::new("main").unwrap(),
-            }
-        ],
-        descriptor_set_layout: None,
-    }));
+    // let obj_three = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
+    //     vertices: vertices_three,
+    //     indices: indices_three,
+    //     shaders: vec![
+    //         ShaderInfo {
+    //             path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
+    //             shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+    //             entry_point: CString::new("main").unwrap(),
+    //         },
+    //         ShaderInfo {
+    //             path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
+    //             shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+    //             entry_point: CString::new("main").unwrap(),
+    //         }
+    //     ],
+    //     descriptor_set_layout: None,
+    // }));
 
-    let obj_two = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
-        vertices: vertices_two,
-        indices: indices_two,
-        shaders: vec![
-            ShaderInfo {
-                path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
-                shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-                entry_point: CString::new("main").unwrap(),
-            },
-            ShaderInfo {
-                path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
-                shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-                entry_point: CString::new("main").unwrap(),
-            }
-        ],
-        descriptor_set_layout: None,
-    }));
-
-    let obj_three = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
-        vertices: vertices_three,
-        indices: indices_three,
-        shaders: vec![
-            ShaderInfo {
-                path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
-                shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-                entry_point: CString::new("main").unwrap(),
-            },
-            ShaderInfo {
-                path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
-                shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-                entry_point: CString::new("main").unwrap(),
-            }
-        ],
-        descriptor_set_layout: None,
-    }));
-
-    let mut current_object_id = vk_controller.add_object_to_render(obj_three.clone()).unwrap();
+    // let mut current_object_id = vk_controller.add_object_to_render(obj_three.clone()).unwrap();
 
     let mut frame_count = 0;
     let mut last_fps_print = std::time::Instant::now();
+    let start_time = Instant::now();
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
@@ -154,18 +190,18 @@ fn main() {
                         winit::event::VirtualKeyCode::Escape => {
                             *control_flow = ControlFlow::Exit;
                         },
-                        winit::event::VirtualKeyCode::Key1 => {
-                            vk_controller.remove_object_to_render(current_object_id);
-                            current_object_id = vk_controller.add_object_to_render(obj_one.clone()).unwrap();
-                        },
-                        winit::event::VirtualKeyCode::Key2 => {
-                            vk_controller.remove_object_to_render(current_object_id);
-                            current_object_id = vk_controller.add_object_to_render(obj_two.clone()).unwrap();
-                        },
-                        winit::event::VirtualKeyCode::Key3 => {
-                            vk_controller.remove_object_to_render(current_object_id);
-                            current_object_id = vk_controller.add_object_to_render(obj_three.clone()).unwrap();
-                        }
+                        // winit::event::VirtualKeyCode::Key1 => {
+                        //     vk_controller.remove_object_to_render(current_object_id);
+                        //     current_object_id = vk_controller.add_object_to_render(obj_one.clone()).unwrap();
+                        // },
+                        // winit::event::VirtualKeyCode::Key2 => {
+                        //     vk_controller.remove_object_to_render(current_object_id);
+                        //     current_object_id = vk_controller.add_object_to_render(obj_two.clone()).unwrap();
+                        // },
+                        // winit::event::VirtualKeyCode::Key3 => {
+                        //     vk_controller.remove_object_to_render(current_object_id);
+                        //     current_object_id = vk_controller.add_object_to_render(obj_three.clone()).unwrap();
+                        // }
                         _ => {}
                     }
                 },
@@ -181,19 +217,31 @@ fn main() {
         if close {
             return;
         }
-        // swapchain_extent = vk_controller.get_swapchain_extent();
+        swapchain_extent = vk_controller.get_swapchain_extent();
         
-        // let mut ubo = UniformBufferObject {
-        //     model: glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-        //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-        //     proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        // };
-        // ubo.proj[(1, 1)] *= -1.0;
-        // {
-        //     let obj_locked = obj.write().unwrap();
-        //     let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
-        //     ubo_locked.buffer = ubo;
-        // }
+        ubo1 = UniformBufferObject {
+            model: glm::translate(&glm::identity(), &glm::Vec3::new(1f32, 0f32, 0f32)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        };
+        ubo1.proj[(1, 1)] *= -1.0;
+        {
+            let obj_locked = obj1.write().unwrap();
+            let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
+            ubo_locked.buffer = ubo1;
+        }
+
+        ubo2 = UniformBufferObject {
+            model: glm::translate(&glm::identity(), &glm::Vec3::new(-1f32, 0f32, 0f32)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        };
+        ubo2.proj[(1, 1)] *= -1.0;
+        {
+            let obj_locked = obj2.write().unwrap();
+            let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
+            ubo_locked.buffer = ubo1;
+        }
 
         vk_controller.draw_frame();
         frame_count += 1;
