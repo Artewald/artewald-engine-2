@@ -6,6 +6,7 @@ use nalgebra_glm as glm;
 
 use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VkController}};
 
+#[macro_export]
 macro_rules! free_allocations_add_error_string {
     ($allocator: expr, $allocations: expr, $error_string: expr) => {
         for allocation in $allocations {
@@ -132,6 +133,10 @@ pub trait Renderable {
     fn cleanup(&mut self, device: &Device, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
     fn update_extra_resource_allocations(&mut self, device: &Device, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
     fn get_serialized_resources(&self) -> Vec<u8>;
+    fn get_vertices_and_indices_hash(&self) -> u64;
+    fn get_vertex_byte_data(&self) -> Vec<u8>;
+    fn get_indices(&self) -> Vec<u32>;
+    fn get_object_resources(&self) -> Vec<(u32, Arc<RwLock<dyn GraphicsResource>>)>;
 }
 
 pub struct ObjectToRender<T: Vertex> {
@@ -142,7 +147,7 @@ pub struct ObjectToRender<T: Vertex> {
 }
 
 
-impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
+impl<T: Vertex + 'static> ObjectToRender<T> {
     pub fn new(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, original_object: Arc<RwLock<dyn GraphicsObject<T>>>, swapchain_format: vk::Format, depth_format: vk::Format, command_pool: &CommandPool, graphics_queue: &Queue, msaa_samples: vk::SampleCountFlags, descriptor_pool: &DescriptorPool, sampler_manager: &mut SamplerManager, swapchain_extent: vk::Extent2D, pipeline_manager: &mut PipelineManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let original_object_locked = original_object.write().unwrap();
         
@@ -261,11 +266,6 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
         self.pipeline_config.clone()
     }
 
-    pub fn get_vertices_and_indices_hash(&self) -> u64 {
-        let original_object_locked = self.original_object.read().unwrap();
-        original_object_locked.get_vertices_and_indices_hash()
-    }
-
     pub fn create_vertex_and_index_allocation(&self, command_pool: &CommandPool,graphics_queue: &Queue, allocator: &mut VkAllocator) -> Result<(AllocationInfo, AllocationInfo), Cow<'static, str>> {
         let original_object_locked = self.original_object.read().unwrap();
         let vertices = original_object_locked.get_vertices();
@@ -291,6 +291,13 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
     pub fn get_num_indices(&self) -> usize {
         let original_object_locked = self.original_object.read().unwrap();
         original_object_locked.get_indices().len()
+    }
+
+    fn get_vertex_byte_data(&self) -> Vec<u8> {
+        let original_object_locked = self.original_object.read().unwrap();
+        let vertices = original_object_locked.get_vertices();
+        let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
+        vertex_data
     }
 
     fn create_descriptor_set(device: &Device, descriptor_pool: &DescriptorPool, descriptor_set_layout: &DescriptorSetLayout, resource_allocations: &[ResourceAllocation], frames_in_flight: u32, allocator: &mut VkAllocator) -> Vec<DescriptorSet> {
@@ -366,7 +373,7 @@ impl<T: Vertex + Clone + 'static> ObjectToRender<T> {
                             p_texel_buffer_view: std::ptr::null(),
                             ..Default::default()
                         }
-                    }, 
+                    },
                     DescriptorType::COMBINED_IMAGE_SAMPLER => {
                         let image_info = DescriptorImageInfo {
                             sampler: sampler_option.as_ref().unwrap().clone(),
@@ -459,7 +466,7 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
                     }
                 },
                 DescriptorType::COMBINED_IMAGE_SAMPLER => {
-                    ()
+                    
                 },
                 _ => {
                     panic!("Not implemented for descriptor type {:?}", descriptor_type.as_raw());
@@ -468,6 +475,29 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
         }
 
         Ok(())
+    }
+    
+    fn get_serialized_resources(&self) -> Vec<u8> {
+        todo!()
+    }
+    
+    fn get_vertices_and_indices_hash(&self) -> u64 {
+        let original_object_locked = self.original_object.read().unwrap();
+        original_object_locked.get_vertices_and_indices_hash()
+    }
+    
+    fn get_vertex_byte_data(&self) -> Vec<u8> {
+        self.get_vertex_byte_data()
+    }
+    
+    fn get_indices(&self) -> Vec<u32> {
+        let original_object_locked = self.original_object.read().unwrap();
+        original_object_locked.get_indices()
+    }
+    
+    fn get_object_resources(&self) -> Vec<(u32, Arc<RwLock<dyn GraphicsResource>>)> {
+        let original_object_locked = self.original_object.read().unwrap();
+        original_object_locked.get_resources()
     }
     
     

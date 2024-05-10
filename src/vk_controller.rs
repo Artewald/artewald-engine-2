@@ -6,9 +6,9 @@ use winit::window::Window;
 
 use crate::{graphics_objects::{GraphicsObject, ObjectToRender, Renderable, UniformBufferObject}, pipeline_manager::{PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
-type ObjectID = usize;
+pub type ObjectID = usize;
 type FrameCounter = usize;
-type VerticesIndicesHash = u64;
+pub type VerticesIndicesHash = u64;
 pub type VertexAllocation = AllocationInfo;
 pub type IndexAllocation = AllocationInfo;
 

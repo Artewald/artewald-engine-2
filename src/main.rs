@@ -16,7 +16,7 @@ mod vk_allocator;
 mod pipeline_manager;
 mod sampler_manager;
 mod test_objects;
-mod object_manager;
+mod shader_manager;
 
 fn main() {
     let event_loop = EventLoop::new();

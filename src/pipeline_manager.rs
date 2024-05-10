@@ -8,10 +8,11 @@ use crate::vk_allocator::{Serializable, VkAllocator};
 
 pub enum GraphicsResourceType {
     UniformBuffer(Vec<u8>),
+    DynamicUniformBuffer(Vec<u8>),
     Texture(DynamicImage),
 }
 
-pub trait Vertex: Serializable + Hash {
+pub trait Vertex: Serializable + Hash + Clone + 'static {
     fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription;
     fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
 }
