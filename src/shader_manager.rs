@@ -16,6 +16,7 @@ use std::{any::Any, borrow::Cow, collections::{HashMap, HashSet}};
 use ash::{vk::{self, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
 use image::GenericImageView;
 use rand::distributions::uniform;
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{GraphicsResourceType, PipelineConfig}, sampler_manager::{self, SamplerConfig, SamplerManager}, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, VerticesIndicesHash, VkController}};
 
@@ -36,25 +37,25 @@ pub struct DataUsedInShader {
     vertices: (AllocationInfo, Vec<u8>),
     indices: (AllocationInfo, Vec<u8>),
     textures: HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>,
-    uniform_buffer_update_callback: HashMap<(ObjectType, ResourceID), fn() -> GraphicsResourceType>,
+    object_global_resource_update_callback: HashMap<(ObjectType, ResourceID), fn() -> GraphicsResourceType>,
     // TODO: textures_dynamic: Vec<u32>,
     uniform_buffers: HashMap<(ObjectType, ResourceID), AllocationInfo>,
     dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>,
-    descriptor_type_data: HashMap<ObjectType, Vec<(ResourceID, DescriptorType, DescriptorSetLayoutBinding)>>,
+    descriptor_type_data: Vec<(ResourceID, DescriptorType, DescriptorSetLayoutBinding)>,
     descriptor_sets: HashMap<ObjectType, Vec<DescriptorSet>>,
 }
 
 impl DataUsedInShader {
-    pub fn new(objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, static_resource_callback: Vec<(ObjectID, ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+    
+    pub fn new(objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let mut textures = HashMap::new();
         let mut uniform_buffers = HashMap::new();
         let mut dynamic_uniform_buffers = HashMap::new();
         let mut object_type_uniform_buffer_dynamic_bytes_indices = HashMap::new();
-        let mut object_type_num_instances = HashMap::new();
         let mut object_type_vertices_bytes_indices = HashMap::new();
         let mut object_type_indices_bytes_indices = HashMap::new();
-        let mut uniform_buffer_update_callback = HashMap::new();
-        let mut descriptor_type_data = HashMap::new();
+        let mut object_global_resource_update_callback = HashMap::new();
+        let mut descriptor_type_data = Vec::new();
         let mut object_types = HashSet::new();
         let mut objects = HashMap::new();
         let mut object_type_num_instances = HashMap::new();
@@ -62,168 +63,170 @@ impl DataUsedInShader {
         let mut vertices_data = Vec::new();
         let mut indices_data = Vec::new();
 
-        for object in objects_to_add {
-            let object_type = object.1.get_vertices_and_indices_hash();
-            let vertices_data = object.1.get_vertex_byte_data();
-            let indices_data = object.1.get_indices();
-            let newly_added_object_type = object_types.insert(object_type);
-    
-            if newly_added_object_type {
+        objects_to_add.iter().for_each(|(_, object, _)| {
+            let e = object_type_num_instances.entry(object.get_vertices_and_indices_hash()).or_insert(0u32);
+            *e += 1;
+        });
 
-            }
-            let vertices_data = object.1.get_vertex_byte_data();
-            let indices_data = object.1.get_indices().iter().map(|x| x.to_ne_bytes()).flatten().collect::<Vec<u8>>();
-    
-            let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
-                Ok(alloc) => alloc,
-                Err(e) => return Err(Cow::from(e)),
-            };
-            let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &indices_data, vk::BufferUsageFlags::INDEX_BUFFER, false) {
-                Ok(alloc) => alloc,
-                Err(e) => {
-                    let mut error_str = e.to_string();
-                    free_allocations_add_error_string!(allocator, vec![vertex_allocation], error_str);
-                    return Err(Cow::from(error_str));
-                },
-            };
-    
-            let vertices = (vertex_allocation, vertices_data);
-            let indices = (index_allocation, indices_data);
-            object_type_vertices_bytes_indices.insert(object_type, (0, vertices_data.len() as u32 - 1));
-            object_type_indices_bytes_indices.insert(object_type, (0, indices_data.len() as u32 - 1));
-            for (object_id, resource_id, resource_callback, _) in static_resource_callback {
-                uniform_buffer_update_callback.insert((object_type, resource_id), resource_callback);
-            }
-    
-            let mut descriptor_set_layout_data = Vec::new();
-            for (object_id, resource_id, resource_callback, layout_binding) in static_resource_callback {
+        let num_objects: u32 = object_type_num_instances.values().sum();
+
+        for (resource_id, resource) in objects_to_add.first().unwrap().1.get_object_resources() {
+            for (resource_id, resource_callback, layout_binding) in object.2 {
                 match resource_callback() {
                     GraphicsResourceType::Texture(image) => {
-                        let mut allocation = match allocator.create_device_local_image(image, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false) {
-                            Ok(alloc) => alloc,
-                            Err(e) => {
-                                let mut error_str = e.to_string();
-                                let mut allocations = Vec::new();
-                                allocations.push(&vertex_allocation);
-                                allocations.push(&index_allocation);
-                                for (allocation, _) in textures.values() {
-                                    allocations.push(allocation);
-                                }
-                                for allocation in uniform_buffers.values() {
-                                    allocations.push(allocation);
-                                }
-                                free_allocations_add_error_string!(allocator, allocations, error_str);
-                                return Err(Cow::from(error_str));
-                            },
-                        };
-                        let mip_levels = allocation.get_mip_levels().unwrap();
-                        // The format needs to be the same as the format read in [`VkAllocator::create_device_local_image`]
-                        match allocator.create_image_view(&mut allocation, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels) {
-                            Ok(_) => (),
-                            Err(e) => {
-                                let mut error_str = e.to_string();
-                                let mut allocations = Vec::new();
-                                allocations.push(&vertex_allocation);
-                                allocations.push(&index_allocation);
-                                allocations.push(&allocation);
-                                for (allocation, _) in textures.values() {
-                                    allocations.push(allocation);
-                                }
-                                for allocation in uniform_buffers.values() {
-                                    allocations.push(allocation);
-                                }
-                                free_allocations_add_error_string!(allocator, allocations, error_str);
-                                return Err(Cow::from(error_str));
-                            },
-                        }
-                        
-                        let sampler_config = SamplerConfig {
-                            s_type: StructureType::SAMPLER_CREATE_INFO,
-                            mag_filter: vk::Filter::LINEAR,
-                            min_filter: vk::Filter::LINEAR,
-                            address_mode_u: vk::SamplerAddressMode::REPEAT,
-                            address_mode_v: vk::SamplerAddressMode::REPEAT,
-                            address_mode_w: vk::SamplerAddressMode::REPEAT,
-                            anisotropy_enable: vk::TRUE,
-                            border_color: vk::BorderColor::INT_OPAQUE_BLACK,
-                            unnormalized_coordinates: vk::FALSE,
-                            compare_enable: vk::FALSE,
-                            compare_op: vk::CompareOp::ALWAYS,
-                            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-                            mip_lod_bias: 0.0,
-                            min_lod: 0.0,
-                            max_lod: allocation.get_mip_levels().unwrap() as f32,
-                        };
-                        let sampler = sampler_manager.get_or_create_sampler(device, instance, physical_device, sampler_config, allocator)?;
-                        textures.insert((object_type, resource_id), (allocation, sampler));
-                        descriptor_set_layout_data.push((resource_id, DescriptorType::COMBINED_IMAGE_SAMPLER, layout_binding));
+                        descriptor_type_data.push((resource_id, DescriptorType::COMBINED_IMAGE_SAMPLER, layout_binding));
                     },
                     GraphicsResourceType::UniformBuffer(buffer) => {
-                        let allocation = match allocator.create_uniform_buffers(buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
-                            Ok(alloc) => alloc,
-                            Err(e) => {
-                                let mut error_str = e.to_string();
-                                let mut allocations = Vec::new();
-                                allocations.push(&vertex_allocation);
-                                allocations.push(&index_allocation);
-                                for (allocation, _) in textures.values() {
-                                    allocations.push(allocation);
-                                }
-                                for allocation in uniform_buffers.values() {
-                                    allocations.push(allocation);
-                                }
-                                free_allocations_add_error_string!(allocator, allocations, error_str);
-                                return Err(Cow::from(error_str));
-                            },
-                        };
-                        uniform_buffers.insert((object_type, resource_id), allocation);
-                        descriptor_set_layout_data.push((resource_id, DescriptorType::UNIFORM_BUFFER, layout_binding));
+                        descriptor_type_data.push((resource_id, DescriptorType::UNIFORM_BUFFER, layout_binding));
                     },
                     x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
                 }
             }
+
+            let resource_lock = resource.read().unwrap();
+            match resource_lock.get_resource() {
+                GraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                    let allocation = match allocator.create_uniform_buffers(num_objects as usize * buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
+                        Ok(alloc) => alloc,
+                        Err(e) => {
+                            let mut error_str = e.to_string();
+                            let mut allocations = Vec::new();
+                            for (allocation, _) in textures.values() {
+                                allocations.push(allocation);
+                            }
+                            for allocation in uniform_buffers.values() {
+                                allocations.push(allocation);
+                            }
+                            for (allocation, _) in dynamic_uniform_buffers.values() {
+                                allocations.push(allocation);
+                            }
+                            free_allocations_add_error_string!(allocator, allocations, error_str);
+                            return Err(Cow::from(error_str));
+                        },
+                    };
+
+                    dynamic_uniform_buffers.insert((object_type, resource_id), (allocation, buffer));
+
+                    object_type_uniform_buffer_dynamic_bytes_indices.insert((object.0, resource_id), (0, buffer.len() as u32 - 1));
+                    descriptor_type_data.push((resource_id, DescriptorType::UNIFORM_BUFFER_DYNAMIC, resource_lock.get_descriptor_set_layout_binding()));
+                    
+                    let object_vertices_data = object.1.get_vertex_byte_data();
+                    let object_indices_data = object.1.get_indices().iter().map(|x| x.to_ne_bytes()).flatten().collect::<Vec<u8>>();
+            
+                    vertices_data.extend_from_slice(&object_vertices_data);
+                    indices_data.extend_from_slice(&object_indices_data);
     
-            for (resource_id, resource) in object.1.get_object_resources() {
-                let resource_lock = resource.read().unwrap();
-                match resource_lock.get_resource() {
-                    GraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        let allocation = match allocator.create_uniform_buffers(buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
-                            Ok(alloc) => alloc,
-                            Err(e) => {
-                                let mut error_str = e.to_string();
-                                let mut allocations = Vec::new();
-                                allocations.push(&vertex_allocation);
-                                allocations.push(&index_allocation);
-                                for (allocation, _) in textures.values() {
-                                    allocations.push(allocation);
-                                }
-                                for allocation in uniform_buffers.values() {
-                                    allocations.push(allocation);
-                                }
-                                for (allocation, _) in dynamic_uniform_buffers.values() {
-                                    allocations.push(allocation);
-                                }
-                                free_allocations_add_error_string!(allocator, allocations, error_str);
-                                return Err(Cow::from(error_str));
-                            },
-                        };
+                    object_type_vertices_bytes_indices.insert(object_type, (0, object_vertices_data.len() as u32 - 1));
+                    object_type_indices_bytes_indices.insert(object_type, (0, object_indices_data.len() as u32 - 1));    
+                    
+                    for (resource_id, resource_callback, _) in object.2 {
+                        object_global_resource_update_callback.insert((object_type, resource_id), resource_callback);
+                    }
+                },
+                x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
+            }
+        }
+
+        for object in objects_to_add {
+            let object_type = object.1.get_vertices_and_indices_hash();
+            let newly_added_object_type = object_types.insert(object_type);
     
-                        dynamic_uniform_buffers.insert((object_type, resource_id), (allocation, buffer));
-                        // object_id_uniform_buffer_dynamic_bytes_indices: HashMap<(ObjectID, ResourceID), (u32, u32)>,
-                        object_type_uniform_buffer_dynamic_bytes_indices.insert((object.0, resource_id), (0, buffer.len() as u32 - 1));
-                        descriptor_set_layout_data.push((resource_id, DescriptorType::UNIFORM_BUFFER_DYNAMIC, resource_lock.get_descriptor_set_layout_binding()));
-                    },
-                    x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
+            if newly_added_object_type {
+                for (resource_id, resource_callback, layout_binding) in object.2 {
+                    match resource_callback() {
+                        GraphicsResourceType::Texture(image) => {
+                            let mut allocation = match allocator.create_device_local_image(image, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false) {
+                                Ok(alloc) => alloc,
+                                Err(e) => {
+                                    let mut error_str = e.to_string();
+                                    let mut allocations = Vec::new();
+                                    for (allocation, _) in textures.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for allocation in uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    free_allocations_add_error_string!(allocator, allocations, error_str);
+                                    return Err(Cow::from(error_str));
+                                },
+                            };
+                            let mip_levels = allocation.get_mip_levels().unwrap();
+                            // The format needs to be the same as the format read in [`VkAllocator::create_device_local_image`]
+                            match allocator.create_image_view(&mut allocation, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    let mut error_str = e.to_string();
+                                    let mut allocations = Vec::new();
+                                    allocations.push(&allocation);
+                                    for (allocation, _) in textures.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for allocation in uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    free_allocations_add_error_string!(allocator, allocations, error_str);
+                                    return Err(Cow::from(error_str));
+                                },
+                            }
+                            
+                            let sampler_config = SamplerConfig {
+                                s_type: StructureType::SAMPLER_CREATE_INFO,
+                                mag_filter: vk::Filter::LINEAR,
+                                min_filter: vk::Filter::LINEAR,
+                                address_mode_u: vk::SamplerAddressMode::REPEAT,
+                                address_mode_v: vk::SamplerAddressMode::REPEAT,
+                                address_mode_w: vk::SamplerAddressMode::REPEAT,
+                                anisotropy_enable: vk::TRUE,
+                                border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+                                unnormalized_coordinates: vk::FALSE,
+                                compare_enable: vk::FALSE,
+                                compare_op: vk::CompareOp::ALWAYS,
+                                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                                mip_lod_bias: 0.0,
+                                min_lod: 0.0,
+                                max_lod: allocation.get_mip_levels().unwrap() as f32,
+                            };
+                            let sampler = sampler_manager.get_or_create_sampler(device, instance, physical_device, sampler_config, allocator)?;
+                            textures.insert((object_type, resource_id), (allocation, sampler));
+                        },
+                        GraphicsResourceType::UniformBuffer(buffer) => {
+                            let allocation = match allocator.create_uniform_buffers(buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
+                                Ok(alloc) => alloc,
+                                Err(e) => {
+                                    let mut error_str = e.to_string();
+                                    let mut allocations = Vec::new();
+                                    for (allocation, _) in textures.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for allocation in uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    free_allocations_add_error_string!(allocator, allocations, error_str);
+                                    return Err(Cow::from(error_str));
+                                },
+                            };
+                            uniform_buffers.insert((object_type, resource_id), allocation);
+                        },
+                        x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
+                    }
                 }
             }
-    
-            descriptor_type_data.insert(object_type, descriptor_set_layout_data);
-    
+
             objects.insert(object.0, object.1);
-    
-            let object_type_num_instances = object_type_num_instances.entry(object_type).or_insert(0);
-            *object_type_num_instances += 1;
         }
+
+        let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
+            Ok(alloc) => alloc,
+            Err(e) => return Err(Cow::from(e)),
+        };
+        let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &indices_data, vk::BufferUsageFlags::INDEX_BUFFER, false) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                let mut error_str = e.to_string();
+                free_allocations_add_error_string!(allocator, vec![vertex_allocation], error_str);
+                return Err(Cow::from(error_str));
+            },
+        };
 
         let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, descriptor_type_data, uniform_buffers, textures, dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
@@ -233,10 +236,10 @@ impl DataUsedInShader {
             object_type_vertices_bytes_indices,
             object_type_indices_bytes_indices,
             object_id_uniform_buffer_dynamic_bytes_indices: object_type_uniform_buffer_dynamic_bytes_indices,
-            vertices,
-            indices,
+            vertices: (vertex_allocation, vertices_data),
+            indices: (index_allocation, indices_data),
             textures,
-            uniform_buffer_update_callback,
+            object_global_resource_update_callback,
             uniform_buffers,
             dynamic_uniform_buffers,
             descriptor_type_data,
@@ -362,5 +365,172 @@ impl DataUsedInShader {
         }
 
         descriptor_sets
+    }
+
+    pub fn add_objects(&mut self, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+        objects_to_add.iter().for_each(|(_, object, _)| {
+            let e = self.object_type_num_instances.entry(object.get_vertices_and_indices_hash()).or_insert(0u32);
+            *e += 1;
+        });
+
+        let mut new_textures = HashMap::new();
+        let mut new_uniform_buffers = HashMap::new();
+        
+
+        for object in objects_to_add {
+            let object_type = object.1.get_vertices_and_indices_hash();
+            let newly_added_object_type = !self.object_type_num_instances.keys().any(|x| x == &object_type);
+
+            if newly_added_object_type {
+                let mut descriptor_set_layout_data = Vec::new();
+                for (resource_id, resource_callback, layout_binding) in object.2 {
+                    match resource_callback() {
+                        GraphicsResourceType::Texture(image) => {
+                            let mut allocation = match allocator.create_device_local_image(image, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false) {
+                                Ok(alloc) => alloc,
+                                Err(e) => {
+                                    let mut error_str = e.to_string();
+                                    let mut allocations = Vec::new();
+                                    for (allocation, _) in new_textures.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for allocation in new_uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    free_allocations_add_error_string!(allocator, allocations, error_str);
+                                    return Err(Cow::from(error_str));
+                                },
+                            };
+                            let mip_levels = allocation.get_mip_levels().unwrap();
+                            // The format needs to be the same as the format read in [`VkAllocator::create_device_local_image`]
+                            match allocator.create_image_view(&mut allocation, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels) {
+                                Ok(_) => (),
+                                Err(e) => {
+                                    let mut error_str = e.to_string();
+                                    let mut allocations = Vec::new();
+                                    allocations.push(&allocation);
+                                    for (allocation, _) in new_textures.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for allocation in new_uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    free_allocations_add_error_string!(allocator, allocations, error_str);
+                                    return Err(Cow::from(error_str));
+                                },
+                            }
+                            
+                            let sampler_config = SamplerConfig {
+                                s_type: StructureType::SAMPLER_CREATE_INFO,
+                                mag_filter: vk::Filter::LINEAR,
+                                min_filter: vk::Filter::LINEAR,
+                                address_mode_u: vk::SamplerAddressMode::REPEAT,
+                                address_mode_v: vk::SamplerAddressMode::REPEAT,
+                                address_mode_w: vk::SamplerAddressMode::REPEAT,
+                                anisotropy_enable: vk::TRUE,
+                                border_color: vk::BorderColor::INT_OPAQUE_BLACK,
+                                unnormalized_coordinates: vk::FALSE,
+                                compare_enable: vk::FALSE,
+                                compare_op: vk::CompareOp::ALWAYS,
+                                mipmap_mode: vk::SamplerMipmapMode::LINEAR,
+                                mip_lod_bias: 0.0,
+                                min_lod: 0.0,
+                                max_lod: allocation.get_mip_levels().unwrap() as f32,
+                            };
+                            let sampler = sampler_manager.get_or_create_sampler(device, instance, physical_device, sampler_config, allocator)?;
+                            new_textures.insert((object_type, resource_id), (allocation, sampler));
+                            descriptor_set_layout_data.push((resource_id, DescriptorType::COMBINED_IMAGE_SAMPLER, layout_binding));
+                        },
+                        GraphicsResourceType::UniformBuffer(buffer) => {
+                            let allocation = match allocator.create_uniform_buffers(buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
+                                Ok(alloc) => alloc,
+                                Err(e) => {
+                                    let mut error_str = e.to_string();
+                                    let mut allocations = Vec::new();
+                                    for (allocation, _) in new_textures.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for allocation in new_uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    free_allocations_add_error_string!(allocator, allocations, error_str);
+                                    return Err(Cow::from(error_str));
+                                },
+                            };
+                            // uniform_buffers.insert((object_type, resource_id), allocation);
+                            descriptor_set_layout_data.push((resource_id, DescriptorType::UNIFORM_BUFFER, layout_binding));
+                        },
+                        x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
+                    }
+                }
+
+                let num_objects = self.object_type_num_instances.get(&object_type).unwrap(); 
+                for (resource_id, resource) in object.1.get_object_resources() {
+                    let resource_lock = resource.read().unwrap();
+                    match resource_lock.get_resource() {
+                        GraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                            let allocation = match allocator.create_uniform_buffers(*num_objects as usize * buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
+                                Ok(alloc) => alloc,
+                                Err(e) => {
+                                    let mut error_str = e.to_string();
+                                    let mut allocations = Vec::new();
+                                    for (allocation, _) in new_textures.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for allocation in new_uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    for (allocation, _) in new_dynamic_uniform_buffers.values() {
+                                        allocations.push(allocation);
+                                    }
+                                    free_allocations_add_error_string!(allocator, allocations, error_str);
+                                    return Err(Cow::from(error_str));
+                                },
+                            };
+        
+                            new_dynamic_uniform_buffers.insert((object_type, resource_id), (allocation, buffer));
+
+                            object_type_uniform_buffer_dynamic_bytes_indices.insert((object.0, resource_id), (0, buffer.len() as u32 - 1));
+                            descriptor_set_layout_data.push((resource_id, DescriptorType::UNIFORM_BUFFER_DYNAMIC, resource_lock.get_descriptor_set_layout_binding()));
+                            
+                            let object_vertices_data = object.1.get_vertex_byte_data();
+                            let object_indices_data = object.1.get_indices().iter().map(|x| x.to_ne_bytes()).flatten().collect::<Vec<u8>>();
+                    
+                            vertices_data.extend_from_slice(&object_vertices_data);
+                            indices_data.extend_from_slice(&object_indices_data);
+            
+                            object_type_vertices_bytes_indices.insert(object_type, (0, object_vertices_data.len() as u32 - 1));
+                            object_type_indices_bytes_indices.insert(object_type, (0, object_indices_data.len() as u32 - 1));    
+                            
+                            for (resource_id, resource_callback, _) in object.2 {
+                                object_global_resource_update_callback.insert((object_type, resource_id), resource_callback);
+                            }
+                        },
+                        x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
+                    }
+                }
+
+                descriptor_type_data.insert(object_type, descriptor_set_layout_data);
+            }
+
+            objects.insert(object.0, object.1);
+        }
+
+        let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
+            Ok(alloc) => alloc,
+            Err(e) => return Err(Cow::from(e)),
+        };
+        let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &indices_data, vk::BufferUsageFlags::INDEX_BUFFER, false) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                let mut error_str = e.to_string();
+                free_allocations_add_error_string!(allocator, vec![vertex_allocation], error_str);
+                return Err(Cow::from(error_str));
+            },
+        };
+
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, descriptor_type_data, uniform_buffers, textures, dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+
+        Ok(())
     }
 }

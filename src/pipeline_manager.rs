@@ -12,7 +12,7 @@ pub enum GraphicsResourceType {
     Texture(DynamicImage),
 }
 
-pub trait Vertex: Serializable + Hash + Clone + 'static {
+pub trait Vertex: Serializable + Hash + Clone + Send + 'static {
     fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription;
     fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
 }
