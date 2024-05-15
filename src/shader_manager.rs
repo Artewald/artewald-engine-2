@@ -20,8 +20,10 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{GraphicsResourceType, PipelineConfig}, sampler_manager::{self, SamplerConfig, SamplerManager}, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, VerticesIndicesHash, VkController}};
 
-type ObjectType = VerticesIndicesHash;
-type NumInstances = u32;
+// type ObjectType = VerticesIndicesHash;
+struct NumInstances(pub u32);
+
+pub struct ObjectType(VerticesIndicesHash);
 
 pub struct ObjectManager {
     pub data_used_in_shader: HashMap<PipelineConfig, DataUsedInShader>,
@@ -50,12 +52,12 @@ impl DataUsedInShader {
     pub fn new(objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let mut textures = HashMap::new();
         let mut uniform_buffers = HashMap::new();
-        let mut dynamic_uniform_buffers = HashMap::new();
+        let mut dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)> = HashMap::new();
         let mut object_type_uniform_buffer_dynamic_bytes_indices = HashMap::new();
         let mut object_type_vertices_bytes_indices = HashMap::new();
         let mut object_type_indices_bytes_indices = HashMap::new();
         let mut object_global_resource_update_callback = HashMap::new();
-        let mut descriptor_type_data = Vec::new();
+        let mut descriptor_type_data: Vec<(ResourceID, DescriptorType, DescriptorSetLayoutBinding)> = Vec::new();
         let mut object_types = HashSet::new();
         let mut objects = HashMap::new();
         let mut object_type_num_instances = HashMap::new();
@@ -68,63 +70,63 @@ impl DataUsedInShader {
             *e += 1;
         });
 
-        let num_objects: u32 = object_type_num_instances.values().sum();
-
-        for (resource_id, resource) in objects_to_add.first().unwrap().1.get_object_resources() {
-            for (resource_id, resource_callback, layout_binding) in object.2 {
-                match resource_callback() {
-                    GraphicsResourceType::Texture(image) => {
-                        descriptor_type_data.push((resource_id, DescriptorType::COMBINED_IMAGE_SAMPLER, layout_binding));
-                    },
-                    GraphicsResourceType::UniformBuffer(buffer) => {
-                        descriptor_type_data.push((resource_id, DescriptorType::UNIFORM_BUFFER, layout_binding));
-                    },
-                    x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
-                }
-            }
-
-            let resource_lock = resource.read().unwrap();
-            match resource_lock.get_resource() {
-                GraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                    let allocation = match allocator.create_uniform_buffers(num_objects as usize * buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
-                        Ok(alloc) => alloc,
-                        Err(e) => {
-                            let mut error_str = e.to_string();
-                            let mut allocations = Vec::new();
-                            for (allocation, _) in textures.values() {
-                                allocations.push(allocation);
-                            }
-                            for allocation in uniform_buffers.values() {
-                                allocations.push(allocation);
-                            }
-                            for (allocation, _) in dynamic_uniform_buffers.values() {
-                                allocations.push(allocation);
-                            }
-                            free_allocations_add_error_string!(allocator, allocations, error_str);
-                            return Err(Cow::from(error_str));
-                        },
-                    };
-
-                    dynamic_uniform_buffers.insert((object_type, resource_id), (allocation, buffer));
-
-                    object_type_uniform_buffer_dynamic_bytes_indices.insert((object.0, resource_id), (0, buffer.len() as u32 - 1));
-                    descriptor_type_data.push((resource_id, DescriptorType::UNIFORM_BUFFER_DYNAMIC, resource_lock.get_descriptor_set_layout_binding()));
-                    
-                    let object_vertices_data = object.1.get_vertex_byte_data();
-                    let object_indices_data = object.1.get_indices().iter().map(|x| x.to_ne_bytes()).flatten().collect::<Vec<u8>>();
-            
-                    vertices_data.extend_from_slice(&object_vertices_data);
-                    indices_data.extend_from_slice(&object_indices_data);
-    
-                    object_type_vertices_bytes_indices.insert(object_type, (0, object_vertices_data.len() as u32 - 1));
-                    object_type_indices_bytes_indices.insert(object_type, (0, object_indices_data.len() as u32 - 1));    
-                    
-                    for (resource_id, resource_callback, _) in object.2 {
-                        object_global_resource_update_callback.insert((object_type, resource_id), resource_callback);
-                    }
+        for (resource_id, resource_callback, layout_binding) in objects_to_add.first().unwrap().2.iter() {
+            match resource_callback() {
+                GraphicsResourceType::Texture(image) => {
+                    descriptor_type_data.push((*resource_id, DescriptorType::COMBINED_IMAGE_SAMPLER, *layout_binding));
                 },
-                x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
+                GraphicsResourceType::UniformBuffer(buffer) => {
+                    descriptor_type_data.push((*resource_id, DescriptorType::UNIFORM_BUFFER, *layout_binding));
+                },
+                x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
             }
+        }
+
+        for (object_type, num_instances) in object_type_num_instances.iter() {
+            for (resource_id, resource) in objects_to_add.first().unwrap().1.get_object_resources() {
+                let resource_lock = resource.read().unwrap();
+                match resource_lock.get_resource() {
+                    GraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                        let allocation = match allocator.create_uniform_buffers(*num_instances as usize * buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
+                            Ok(alloc) => alloc,
+                            Err(e) => {
+                                let mut error_str = e.to_string();
+                                let mut allocations = Vec::new();
+                                for (allocation, _) in textures.values() {
+                                    allocations.push(allocation);
+                                }
+                                for allocation in uniform_buffers.values() {
+                                    allocations.push(allocation);
+                                }
+                                for (allocation, _) in dynamic_uniform_buffers.values() {
+                                    allocations.push(allocation);
+                                }
+                                free_allocations_add_error_string!(allocator, allocations, error_str);
+                                return Err(Cow::from(error_str));
+                            },
+                        };
+    
+                        dynamic_uniform_buffers.insert(resource_id, (allocation, buffer));
+    
+                        object_type_uniform_buffer_dynamic_bytes_indices.insert((object.0, resource_id), (0, buffer.len() as u32 - 1));
+                        descriptor_type_data.push(((*object_type, resource_id), DescriptorType::UNIFORM_BUFFER_DYNAMIC, resource_lock.get_descriptor_set_layout_binding()));
+                        
+                        let object_vertices_data = object.1.get_vertex_byte_data();
+                        let object_indices_data = object.1.get_indices().iter().map(|x| x.to_ne_bytes()).flatten().collect::<Vec<u8>>();
+                
+                        vertices_data.extend_from_slice(&object_vertices_data);
+                        indices_data.extend_from_slice(&object_indices_data);
+        
+                        object_type_vertices_bytes_indices.insert(object_type, (0, object_vertices_data.len() as u32 - 1));
+                        object_type_indices_bytes_indices.insert(object_type, (0, object_indices_data.len() as u32 - 1));    
+                        
+                        for (resource_id, resource_callback, _) in object.2 {
+                            object_global_resource_update_callback.insert((object_type, resource_id), resource_callback);
+                        }
+                    },
+                    x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
+                }
+            } 
         }
 
         for object in objects_to_add {

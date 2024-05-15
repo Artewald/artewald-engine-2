@@ -6,9 +6,11 @@ use winit::window::Window;
 
 use crate::{graphics_objects::{GraphicsObject, ObjectToRender, Renderable, UniformBufferObject}, pipeline_manager::{PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
-pub type ObjectID = usize;
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
+pub struct ObjectID(pub usize);
 type FrameCounter = usize;
-pub type VerticesIndicesHash = u64;
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
+pub struct VerticesIndicesHash(pub u64);
 pub type VertexAllocation = AllocationInfo;
 pub type IndexAllocation = AllocationInfo;
 

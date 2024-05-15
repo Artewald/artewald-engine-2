@@ -2,7 +2,7 @@ use std::{collections::{hash_map, HashMap}, hash::{self, Hash, Hasher}, sync::{A
 use ash::{vk::{DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateFlags, DescriptorSetLayoutCreateInfo, StructureType}, Device};
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{GraphicsObject, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{GraphicsResource, GraphicsResourceType, ShaderInfo}, vertex::{OnlyTwoDPositionVertex, SimpleVertex}, vk_allocator::{Serializable, VkAllocator}};
+use crate::{graphics_objects::{GraphicsObject, ResourceID, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{GraphicsResource, GraphicsResourceType, ShaderInfo}, vertex::{OnlyTwoDPositionVertex, SimpleVertex}, vk_allocator::{Serializable, VkAllocator}, vk_controller::VerticesIndicesHash};
 
 pub struct SimpleRenderableObject {
     pub vertices: Vec<SimpleVertex>,
@@ -22,10 +22,10 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
         self.indices.clone()
     }
 
-    fn get_resources(&self) -> Vec<(u32, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
+    fn get_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
         vec![
-            (1, self.uniform_buffer.clone()),
-            (2, self.texture.clone()),
+            (ResourceID(1), self.uniform_buffer.clone()),
+            (ResourceID(2), self.texture.clone()),
         ]
     }
 
@@ -33,11 +33,11 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
         self.shaders.clone()
     }
     
-    fn get_vertices_and_indices_hash(&self) -> u64 {
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash {
         let mut hasher = hash::DefaultHasher::new();
         self.vertices.iter().for_each(|vertex| vertex.hash(&mut hasher));
         self.indices.iter().for_each(|index| index.hash(&mut hasher));
-        hasher.finish()
+        VerticesIndicesHash(hasher.finish())
     }
 }
 
@@ -57,7 +57,7 @@ impl GraphicsObject<OnlyTwoDPositionVertex> for TwoDPositionSimpleRenderableObje
         self.indices.clone()
     }
 
-    fn get_resources(&self) -> Vec<(u32, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
+    fn get_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
         vec![]
     }
 
@@ -65,10 +65,10 @@ impl GraphicsObject<OnlyTwoDPositionVertex> for TwoDPositionSimpleRenderableObje
         self.shaders.clone()
     }
     
-    fn get_vertices_and_indices_hash(&self) -> u64 {
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash {
         let mut hasher = hash::DefaultHasher::new();
         self.vertices.iter().for_each(|vertex| vertex.hash(&mut hasher));
         self.indices.iter().for_each(|index| index.hash(&mut hasher));
-        hasher.finish()
+        VerticesIndicesHash(hasher.finish())
     }
 }

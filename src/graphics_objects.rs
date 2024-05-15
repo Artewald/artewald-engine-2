@@ -4,7 +4,7 @@ use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, Des
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
-use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VkController}};
+use crate::{pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VerticesIndicesHash, VkController}};
 
 #[macro_export]
 macro_rules! free_allocations_add_error_string {
@@ -19,7 +19,9 @@ macro_rules! free_allocations_add_error_string {
 }
 
 type ResourceAllocation = (ResourceID, vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType, Option<Sampler>);
-pub type ResourceID = u32;
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
+pub struct ResourceID(pub u32);
 
 #[derive(Debug, Clone, Copy, Default)]
 #[repr(C, align(16))]
@@ -122,21 +124,21 @@ pub trait GraphicsObject<T: Vertex> {
     fn get_indices(&self) -> Vec<u32>;
     fn get_resources(&self) -> Vec<(ResourceID, Arc<RwLock<dyn GraphicsResource>>)>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
-    fn get_vertices_and_indices_hash(&self) -> u64;
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash;
 }
 
 pub trait Renderable {
     fn take_extra_resource_allocations(&mut self) -> Vec<ResourceAllocation>;
-    fn borrow_extra_resource_allocations(&self) -> Vec<(u32, vk::DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)>;
+    fn borrow_extra_resource_allocations(&self) -> Vec<(ResourceID, vk::DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)>;
     fn get_pipeline_config(&self) -> PipelineConfig;
     fn borrow_descriptor_sets(&self) -> &[DescriptorSet];
     fn cleanup(&mut self, device: &Device, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
     fn update_extra_resource_allocations(&mut self, device: &Device, frame_index: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>>;
     fn get_serialized_resources(&self) -> Vec<u8>;
-    fn get_vertices_and_indices_hash(&self) -> u64;
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash;
     fn get_vertex_byte_data(&self) -> Vec<u8>;
     fn get_indices(&self) -> Vec<u32>;
-    fn get_object_resources(&self) -> Vec<(u32, Arc<RwLock<dyn GraphicsResource>>)>;
+    fn get_object_resources(&self) -> Vec<(ResourceID, Arc<RwLock<dyn GraphicsResource>>)>;
 }
 
 pub struct ObjectToRender<T: Vertex> {
@@ -179,6 +181,12 @@ impl<T: Vertex + 'static> ObjectToRender<T> {
                         Err(e) => {
                             let mut error_str = e.to_string();
                             // free_allocations_add_error_string!(allocator, vec![vertex_allocation, index_allocation], error_str);
+                            for (_, _, allocation, _, _) in extra_resource_allocations {
+                                let error = allocator.free_memory_allocation(allocation);
+                                if let Err(err) = error {
+                                    error_str.push_str(&format!("\n{}", err));
+                                }
+                            }
                             return Err(Cow::from(error_str));
                         },
                     };
@@ -191,6 +199,12 @@ impl<T: Vertex + 'static> ObjectToRender<T> {
                         Err(e) => {
                             let mut error_str = e.to_string();
                             // free_allocations_add_error_string!(allocator, vec![vertex_allocation, index_allocation], error_str);
+                            for (_, _, allocation, _, _) in extra_resource_allocations {
+                                let error = allocator.free_memory_allocation(allocation);
+                                if let Err(err) = error {
+                                    error_str.push_str(&format!("\n{}", err));
+                                }
+                            }
                             return Err(Cow::from(error_str));
                         },
                     };
@@ -201,6 +215,12 @@ impl<T: Vertex + 'static> ObjectToRender<T> {
                         Err(e) => {
                             let mut error_str = e.to_string();
                             free_allocations_add_error_string!(allocator, vec![allocation], error_str);
+                            for (_, _, allocation, _, _) in extra_resource_allocations {
+                                let error = allocator.free_memory_allocation(allocation);
+                                if let Err(err) = error {
+                                    error_str.push_str(&format!("\n{}", err));
+                                }
+                            }
                             return Err(Cow::from(error_str));
                         },
                     }
@@ -226,6 +246,16 @@ impl<T: Vertex + 'static> ObjectToRender<T> {
                     extra_resource_allocations.push((id, resource.get_descriptor_set_layout_binding(), allocation, DescriptorType::COMBINED_IMAGE_SAMPLER, Some(sampler)));
                     descriptor_set_layout_bindings.push(resource.get_descriptor_set_layout_binding());
                 }
+                GraphicsResourceType::DynamicUniformBuffer(_) => {
+                    let mut error_str = String::from("You cannot use dynamic uniform buffers as a \"static\" resource for an object, it should be defined per instance! Use a normal uniform buffer instead.");
+                    for (_, _, allocation, _, _) in extra_resource_allocations {
+                        let error = allocator.free_memory_allocation(allocation);
+                        if let Err(err) = error {
+                            error_str.push_str(&format!("\n{}", err));
+                        }
+                    }
+                    return Err(Cow::from(error_str));
+                },
             }
         }
 
@@ -414,7 +444,7 @@ impl<T: Vertex + 'static> ObjectToRender<T> {
 }
 
 impl<T: Vertex> Renderable for ObjectToRender<T> {
-    fn borrow_extra_resource_allocations(&self) -> Vec<(u32, DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)> {
+    fn borrow_extra_resource_allocations(&self) -> Vec<(ResourceID, DescriptorSetLayoutBinding, &AllocationInfo, DescriptorType, Option<Sampler>)> {
         self.extra_resource_allocations.iter().map(|(id, binding, alloc, descriptor_type, sampler)| (*id, *binding, alloc, *descriptor_type, *sampler)).collect()
     }
 
@@ -481,7 +511,7 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
         todo!()
     }
     
-    fn get_vertices_and_indices_hash(&self) -> u64 {
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash {
         let original_object_locked = self.original_object.read().unwrap();
         original_object_locked.get_vertices_and_indices_hash()
     }
@@ -495,7 +525,7 @@ impl<T: Vertex> Renderable for ObjectToRender<T> {
         original_object_locked.get_indices()
     }
     
-    fn get_object_resources(&self) -> Vec<(u32, Arc<RwLock<dyn GraphicsResource>>)> {
+    fn get_object_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
         let original_object_locked = self.original_object.read().unwrap();
         original_object_locked.get_resources()
     }
