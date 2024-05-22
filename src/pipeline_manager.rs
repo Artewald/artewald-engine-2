@@ -72,6 +72,10 @@ impl PipelineConfig {
         })
     }
 
+    pub fn get_shader_paths(&self) -> Vec<String> {
+        self.shaders.iter().map(|shader| shader.path.to_string_lossy().to_string()).collect()
+    }
+
     fn create_graphics_pipeline(&mut self, device: &Device, swapchain_extent: &vk::Extent2D, render_pass: RenderPass, allocator: &mut VkAllocator) -> Result<vk::Pipeline, Cow<'static, str>> {
         for shader in self.shaders.iter() {
             if !(shader.shader_stage_flag == vk::ShaderStageFlags::VERTEX ||

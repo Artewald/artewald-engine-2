@@ -16,7 +16,7 @@ mod vk_allocator;
 mod pipeline_manager;
 mod sampler_manager;
 mod test_objects;
-mod shader_manager;
+mod object_manager;
 
 fn main() {
     let event_loop = EventLoop::new();
@@ -89,8 +89,9 @@ fn main() {
         descriptor_set_layout: None,
     }));
 
-    vk_controller.add_object_to_render(obj1.clone()).unwrap();
-    vk_controller.add_object_to_render(obj2.clone()).unwrap();
+    
+
+    let object_ids = vk_controller.add_objects_to_render(vec![(obj1.clone(), Vec::new()), (obj2.clone(), Vec::new())]).unwrap();
     
     // let num_vertices = 12;//49152*4;
 
