@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ffi::CString, fs::read_to_string, hash::{Hash, Hasher}};
+use std::{borrow::Cow, ffi::CString, fs::read_to_string, hash::Hash};
 
 use ash::{vk::{self, DescriptorSetLayoutBinding, RenderPass, SampleCountFlags, StructureType, VertexInputAttributeDescription, VertexInputBindingDescription}, Device};
 use image::DynamicImage;
@@ -6,20 +6,28 @@ use shaderc::{Compiler, ShaderKind};
 
 use crate::vk_allocator::{Serializable, VkAllocator};
 
-pub enum GraphicsResourceType {
-    UniformBuffer(Vec<u8>),
+pub enum ObjectInstanceGraphicsResourceType {
     DynamicUniformBuffer(Vec<u8>),
+}
+
+pub enum ObjectTypeGraphicsResourceType {
+    UniformBuffer(Vec<u8>),
     Texture(DynamicImage),
 }
 
 pub trait Vertex: Serializable + Hash + Clone + Send + 'static {
-    fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription;
-    fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
+    fn get_input_binding_description() -> vk::VertexInputBindingDescription;
+    fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription>;
 }
 
-pub trait GraphicsResource {
+pub trait ObjectTypeGraphicsResource {
     fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding;
-    fn get_resource(&self) -> GraphicsResourceType;
+    fn get_resource(&self) -> ObjectTypeGraphicsResourceType;
+}
+
+pub trait ObjectInstanceGraphicsResource {
+    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding;
+    fn get_resource(&self) -> ObjectInstanceGraphicsResourceType;
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -355,7 +363,6 @@ impl PartialEq for PipelineConfig {
             binding.p_immutable_samplers == binding2.p_immutable_samplers
         })) &&
         self.descriptor_set_layout_bindings.len() == other.descriptor_set_layout_bindings.len() //&&
-        // self.descriptor_set_layout == other.descriptor_set_layout
     }
 }
 

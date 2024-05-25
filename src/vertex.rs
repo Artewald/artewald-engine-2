@@ -36,7 +36,7 @@ impl SimpleVertex {
 }
 
 impl Vertex for SimpleVertex {
-    fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription {
+    fn get_input_binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription {
             binding: 0,
             stride: std::mem::size_of::<SimpleVertex>() as u32,
@@ -44,7 +44,7 @@ impl Vertex for SimpleVertex {
         }
     }
 
-    fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription> {
+    fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription> {
         // If you add any 64 bit types, you need to change the format to R64G64_SFLOAT and increase the location size to 2
         let position_attribute_description = vk::VertexInputAttributeDescription {
             binding: 0,
@@ -113,7 +113,7 @@ pub struct OnlyTwoDPositionVertex {
 }
 
 impl Vertex for OnlyTwoDPositionVertex {
-    fn get_input_binding_description(&self) -> vk::VertexInputBindingDescription {
+    fn get_input_binding_description() -> vk::VertexInputBindingDescription {
         vk::VertexInputBindingDescription {
             binding: 0,
             stride: std::mem::size_of::<Self>() as u32,
@@ -121,7 +121,7 @@ impl Vertex for OnlyTwoDPositionVertex {
         }
     }
 
-    fn get_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription> {
+    fn get_attribute_descriptions() -> Vec<vk::VertexInputAttributeDescription> {
         let position_attribute_description = vk::VertexInputAttributeDescription {
             binding: 0,
             location: 0,

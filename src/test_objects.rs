@@ -2,7 +2,7 @@ use std::{collections::{hash_map, HashMap}, hash::{self, Hash, Hasher}, sync::{A
 use ash::{vk::{DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateFlags, DescriptorSetLayoutCreateInfo, StructureType}, Device};
 use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{GraphicsObject, ResourceID, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{GraphicsResource, GraphicsResourceType, ShaderInfo}, vertex::{OnlyTwoDPositionVertex, SimpleVertex}, vk_allocator::{Serializable, VkAllocator}, vk_controller::VerticesIndicesHash};
+use crate::{graphics_objects::{GraphicsObject, ResourceID, TextureResource, UniformBufferObject, UniformBufferResource}, pipeline_manager::{ObjectInstanceGraphicsResource, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, ShaderInfo}, vertex::{OnlyTwoDPositionVertex, SimpleVertex}, vk_allocator::{Serializable, VkAllocator}, vk_controller::VerticesIndicesHash};
 
 pub struct SimpleRenderableObject {
     pub vertices: Vec<SimpleVertex>,
@@ -22,7 +22,7 @@ impl GraphicsObject<SimpleVertex> for SimpleRenderableObject {
         self.indices.clone()
     }
 
-    fn get_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
+    fn get_instance_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectInstanceGraphicsResource + 'static)>>)> {
         vec![
             (ResourceID(1), self.uniform_buffer.clone()),
             (ResourceID(2), self.texture.clone()),
@@ -57,7 +57,7 @@ impl GraphicsObject<OnlyTwoDPositionVertex> for TwoDPositionSimpleRenderableObje
         self.indices.clone()
     }
 
-    fn get_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn GraphicsResource + 'static)>>)> {
+    fn get_instance_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectTypeGraphicsResource + 'static)>>)> {
         vec![]
     }
 

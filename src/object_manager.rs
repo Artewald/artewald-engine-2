@@ -17,26 +17,26 @@ use ash::{vk::{self, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, 
 use image::DynamicImage;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
-use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{GraphicsResource, GraphicsResourceType, PipelineConfig}, sampler_manager::{SamplerConfig, SamplerManager}, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, VerticesIndicesHash, VkController}};
+use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig}, sampler_manager::{SamplerConfig, SamplerManager}, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, VerticesIndicesHash, VkController}};
 
 enum DataToRemove {
     Allocation(AllocationInfo),
     DescriptorSets(Vec<DescriptorSet>),
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Inclusive(pub usize);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Exclusive(pub usize);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NumInstances(pub usize);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Counter(pub usize);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NumIndices(pub usize);
 
 impl Counter {
@@ -45,15 +45,16 @@ impl Counter {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct LastFrameIndex(pub usize);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ObjectType(VerticesIndicesHash);
 
 pub struct ObjectManager {
     data_used_in_shader: HashMap<PipelineConfig, DataUsedInShader>,
     pipeline_config_hash_to_pipeline_config: HashMap<u64, PipelineConfig>,
+    object_type_to_pipeline_hash: HashMap<ObjectType, u64>,
     object_id_to_pipeline_hash: HashMap<ObjectID, u64>,
 }
 
@@ -63,24 +64,87 @@ impl ObjectManager {
             data_used_in_shader: HashMap::new(),
             pipeline_config_hash_to_pipeline_config: HashMap::new(),
             object_id_to_pipeline_hash: HashMap::new(),
+            object_type_to_pipeline_hash: HashMap::new(),
         }
     }
 
-    pub fn add_objects(&mut self, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    pub fn add_objects(&mut self, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let all_object_types_including_new_ones = self.get_object_types();
         objects_to_add.iter().for_each(|(_, object, _)| {
             let object_type = ObjectType(object.get_vertices_and_indices_hash());
         });
 
-
-
         if all_object_types_including_new_ones.len() > VkController::MAX_OBJECT_TYPES {
             return Err(Cow::from(format!("The maximum number of object types is {}. If you add the given objects you would have {} object types, which is not supported (this is related to how many descriptor sets that are in the descriptor set pool).", VkController::MAX_OBJECT_TYPES, all_object_types_including_new_ones.len())));
         }
 
-        let mut pipeline_objects: HashMap<PipelineConfig, Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>> = HashMap::new();
+        let mut object_type_resource_callbacks = HashMap::new();
+        for (_, object, callbacks) in objects_to_add {
+            let object_type = ObjectType(object.get_vertices_and_indices_hash());
+            let object_type_resource_callbacks = object_type_resource_callbacks.entry(object_type).or_insert_with(Vec::new);
+            object_type_resource_callbacks.sort_by_key(|(x, _, _)| *x);
+            let mut new_callbacks = callbacks.clone();
+            new_callbacks.sort_by_key(|(x, _, _)| *x);
+            if object_type_resource_callbacks.is_empty() {
+                object_type_resource_callbacks.extend(callbacks);
+            } else if object_type_resource_callbacks.len() != callbacks.len() {
+                return Err(Cow::from(format!("Object type {:?} has multiple different {} callbacks. Which is not supported. It has to be the same for all objects with the same type.", object_type, std::any::type_name::<ObjectTypeGraphicsResourceType>()))); 
+            } else if !object_type_resource_callbacks.iter().zip(new_callbacks.iter()).all(|(a, b)| a.0 == b.0) {
+                println!("Object type {:?} got new {} callbacks. It will therefor overwrite the old ones chosen. Remember that you only can have one set of callbacks for a object type!", object_type, std::any::type_name::<ObjectTypeGraphicsResourceType>());
+                object_type_resource_callbacks.clear();
+                object_type_resource_callbacks.extend(callbacks);
+            }
+        }
+
+        let mut object_type_to_pipeline = HashMap::new();
+        self.object_type_to_pipeline_hash.iter().for_each(|(object_type, pipeline_hash)| {
+            let pipeline_config = self.pipeline_config_hash_to_pipeline_config.get(pipeline_hash).expect("Pipeline hash not found in object manager. This should never happen!").clone();
+            object_type_to_pipeline.insert(object_type.clone(), pipeline_config);
+        });
+
+        for (_, object, callbacks) in objects_to_add.iter() {
+            let object_type = ObjectType(object.get_vertices_and_indices_hash());
+
+            if object_type_to_pipeline.contains_key(&object_type) {
+                continue;
+            }
+
+            let mut resource_ids = Vec::new();
+            let mut descriptor_set_layout_bindings = Vec::new();
+            for (resource_id, _, layout_binding) in object_type_resource_callbacks.get(&object_type).unwrap() {
+                if resource_ids.contains(&resource_id) {
+                    return Err(Cow::from(format!("Resource id {:?} is used multiple times for the same object. This is not allowed.", resource_id)));
+                }
+                resource_ids.push(resource_id);
+                descriptor_set_layout_bindings.push(*layout_binding);
+            }
+            for (resource_id, resource) in object.get_object_instance_resources().iter() {
+                if resource_ids.contains(&resource_id) {
+                    return Err(Cow::from(format!("Resource id {:?} is used multiple times for the same object. This is not allowed.", resource_id)));
+                }
+                resource_ids.push(resource_id);
+                let layout_binding = resource.read().unwrap().get_descriptor_set_layout_binding();
+                descriptor_set_layout_bindings.push(layout_binding);
+            }
+
+            let pipeline_config = PipelineConfig::new(
+                device,
+                object.get_shader_infos(),
+                object.get_vertex_binding_info(),
+                object.get_vertex_attribute_descriptions(),
+                &descriptor_set_layout_bindings,
+                msaa_samples,
+                swapchain_format,
+                depth_format,
+                allocator
+            ).expect(format!("Failed to create pipeline config for object with type {:?}", object_type).as_str());
+
+            object_type_to_pipeline.insert(object_type, pipeline_config);
+        }
+
+        let mut pipeline_objects: HashMap<PipelineConfig, Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>> = HashMap::new();
         for (id, object, resources) in objects_to_add {
-            let pipeline_config = object.get_pipeline_config();
+            let pipeline_config = object_type_to_pipeline.get(&ObjectType(object.get_vertices_and_indices_hash())).expect("Object type not found in object manager. This should never happen!").clone();
             let e = pipeline_objects.entry(pipeline_config).or_insert_with(Vec::new);
             e.push((id, object, resources));
         }
@@ -94,9 +158,10 @@ impl ObjectManager {
             // }
             let object_ids = objects_with_pipeline_to_add.iter().map(|(id, _, _)| *id).collect::<Vec<_>>();
             if let Entry::Occupied(mut data_used_in_shader) = self.data_used_in_shader.entry(pipeline_config.clone()) {
-                data_used_in_shader.get_mut().add_objects(objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
+                data_used_in_shader.get_mut().add_objects(&pipeline_config, objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
             } else {
-                let data_used_in_shader = DataUsedInShader::new(objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
+                let mut data_used_in_shader = DataUsedInShader::new(&pipeline_config, objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
+                data_used_in_shader.add_objects(&pipeline_config, objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
                 self.data_used_in_shader.insert(pipeline_config.clone(), data_used_in_shader);
                 self.pipeline_config_hash_to_pipeline_config.insert(pipeline_hash, pipeline_config.clone());
             }
@@ -104,6 +169,13 @@ impl ObjectManager {
                 self.object_id_to_pipeline_hash.insert(*id, pipeline_hash);
             });
         }
+
+        object_type_to_pipeline.iter().for_each(|(object_type, pipeline_config)| {
+            let mut hasher = DefaultHasher::new();
+            pipeline_config.hash(&mut hasher);
+            let pipeline_hash = hasher.finish();
+            self.object_type_to_pipeline_hash.insert(object_type.clone(), pipeline_hash);
+        });
 
         Ok(())
     }
@@ -180,7 +252,7 @@ pub struct DataUsedInShader {
     pub vertices: (AllocationInfo, Vec<u8>),
     pub indices: (AllocationInfo, Vec<u8>),
     textures: HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>,
-    object_global_resource_data_getters: HashMap<(ObjectType, ResourceID), fn() -> GraphicsResourceType>,
+    object_global_resource_data_getters: HashMap<(ObjectType, ResourceID), fn() -> ObjectTypeGraphicsResourceType>,
     // TODO: textures_dynamic: Vec<u32>,
     uniform_buffers: HashMap<(ObjectType, ResourceID), AllocationInfo>,
     dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>,
@@ -191,7 +263,7 @@ pub struct DataUsedInShader {
 
 impl DataUsedInShader {
 
-    fn new(objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
+    fn new(pipeline_config: &PipelineConfig, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let mut textures = HashMap::new();
         let mut uniform_buffers = HashMap::new();
         let mut dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)> = HashMap::new();
@@ -202,7 +274,6 @@ impl DataUsedInShader {
         let mut descriptor_type_data = Vec::new();
         let mut object_types = HashSet::new();
         let mut objects = HashMap::new();
-        let pipeline_config = objects_to_add[0].1.get_pipeline_config();
         let mut vertices_data = Vec::new();
         let mut indices_data = Vec::new();
 
@@ -210,21 +281,20 @@ impl DataUsedInShader {
 
         for (resource_id, resource_callback, layout_binding) in objects_to_add.first().unwrap().2.iter() {
             match resource_callback() {
-                GraphicsResourceType::Texture(image) => {
+                ObjectTypeGraphicsResourceType::Texture(image) => {
                     descriptor_type_data.push((*resource_id, DescriptorType::COMBINED_IMAGE_SAMPLER, *layout_binding));
                 },
-                GraphicsResourceType::UniformBuffer(buffer) => {
+                ObjectTypeGraphicsResourceType::UniformBuffer(buffer) => {
                     descriptor_type_data.push((*resource_id, DescriptorType::UNIFORM_BUFFER, *layout_binding));
-                },
-                x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
+                }
             }
         }
 
         for (object_type, num_instances) in object_type_num_instances.iter() {
-            for (resource_id, resource) in objects_to_add.iter().find(|obj| obj.1.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_resources() {
+            for (resource_id, resource) in objects_to_add.iter().find(|obj| obj.1.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    GraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
                         match Self::create_dynamic_uniform_buffer(*object_type, resource_id, num_instances.0, buffer.clone(), &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
@@ -238,7 +308,6 @@ impl DataUsedInShader {
                         
                         Self::add_static_resource_callbacks_to_object_global_resource_update_callback_if_new_object_type(*object_type, &object_type_data, &mut object_global_resource_data_getters);
                     },
-                    x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
                 }
             } 
         }
@@ -250,28 +319,26 @@ impl DataUsedInShader {
             if newly_added_object_type {
                 for (resource_id, resource_callback, layout_binding) in object.2 {
                     match resource_callback() {
-                        GraphicsResourceType::Texture(image) => {
+                        ObjectTypeGraphicsResourceType::Texture(image) => {
                             match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, sampler_manager, allocator) {
                                 Ok(_) => (),
                                 Err(e) => return Err(e),
                             }
                         },
-                    GraphicsResourceType::UniformBuffer(buffer) => {
+                    ObjectTypeGraphicsResourceType::UniformBuffer(buffer) => {
                         match Self::create_and_add_static_uniform_buffer(object_type, resource_id, &buffer, current_frame, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
                     },
-                    x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
-                }
+                    }
                 }
             }
             
             objects.insert(object.0, object.1);
         }
         
-        let mut all_objects = objects.iter().map(|(k, v)| (*k, ObjectType(v.get_vertices_and_indices_hash()), v.get_object_resources())).collect::<Vec<_>>();
-
+        let mut all_objects = objects_to_add.iter().map(|(id, obj, _)| (id, obj)).collect::<Vec<_>>(); 
         Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut object_id_uniform_buffer_dynamic_bytes_indices);
         
         Self::copy_dynamic_buffer_data_to_gpu(&objects, &mut dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
@@ -309,7 +376,7 @@ impl DataUsedInShader {
         })
     }
 
-    fn add_objects(&mut self, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    fn add_objects(&mut self, pipeline_config: &PipelineConfig, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let mut textures = HashMap::new();
         let mut uniform_buffers = HashMap::new();
         let mut dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)> = HashMap::new();
@@ -320,7 +387,6 @@ impl DataUsedInShader {
         let descriptor_type_data = self.descriptor_type_data.clone();
         let mut object_types = HashSet::new();
         let mut new_objects = HashMap::new();
-        let pipeline_config = objects_to_add[0].1.get_pipeline_config();
         let mut vertices_data = self.vertices.1.clone();
         let mut indices_data = self.indices.1.clone();
 
@@ -331,22 +397,20 @@ impl DataUsedInShader {
         });
 
         for (object_type, (num_instances, _)) in object_type_num_instances.iter() {
-            for (resource_id, resource) in objects_to_add.iter().find(|obj| obj.1.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_resources() {
+            for (resource_id, resource) in objects_to_add.iter().find(|obj| obj.1.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    GraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
                         match Self::create_dynamic_uniform_buffer(*object_type, resource_id, *num_instances, buffer.clone(), &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
-
-                        Self::add_object_vertices_and_indices_if_new_object_type(*object_type, &object_type_data, &mut object_type_vertices_bytes_indices, &mut object_type_indices_bytes_indices, &mut vertices_data, &mut indices_data).unwrap();
-                        
-                        Self::add_static_resource_callbacks_to_object_global_resource_update_callback_if_new_object_type(*object_type, &object_type_data, &mut object_global_resource_data_getters);
                     },
-                    x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
                 }
-            } 
+            }
+
+            Self::add_object_vertices_and_indices_if_new_object_type(*object_type, &object_type_data, &mut object_type_vertices_bytes_indices, &mut object_type_indices_bytes_indices, &mut vertices_data, &mut indices_data).unwrap();
+            Self::add_static_resource_callbacks_to_object_global_resource_update_callback_if_new_object_type(*object_type, &object_type_data, &mut object_global_resource_data_getters);
         }
         
         for object in objects_to_add {
@@ -357,28 +421,27 @@ impl DataUsedInShader {
             if newly_added_object_type {
                 for (resource_id, resource_callback, layout_binding) in object.2 {
                     match resource_callback() {
-                        GraphicsResourceType::Texture(image) => {
+                        ObjectTypeGraphicsResourceType::Texture(image) => {
                             match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, sampler_manager, allocator) {
                                 Ok(_) => (),
                                 Err(e) => return Err(e),
                             }
                         },
-                    GraphicsResourceType::UniformBuffer(buffer) => {
+                    ObjectTypeGraphicsResourceType::UniformBuffer(buffer) => {
                         match Self::create_and_add_static_uniform_buffer(object_type, resource_id, &buffer, current_frame, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
                     },
-                    x => eprintln!("You cannot attach resource type that is not static to a specific object type (instance definition), use static resources instead. Currently only textures and uniform buffers (non-dynamic) are supported."),
-                }
+                    }
                 }
             }
             
             new_objects.insert(object.0, object.1);
         }
         
-        let mut all_objects = self.objects.iter().map(|(k, v)| (*k, ObjectType(v.get_vertices_and_indices_hash()), v.get_object_resources())).collect::<Vec<_>>();
-        all_objects.extend(new_objects.iter().map(|(k, v)| (*k, ObjectType(v.get_vertices_and_indices_hash()), v.get_object_resources())));
+        let mut all_objects = self.objects.iter().map(|(k, v)| (k, v)).collect::<Vec<_>>();
+        all_objects.extend(new_objects.iter().map(|(k, v)| (k, v)));
 
         Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut object_id_uniform_buffer_dynamic_bytes_indices);
         
@@ -502,16 +565,15 @@ impl DataUsedInShader {
 
         let mut new_dynamic_uniform_buffers = HashMap::new();
         for (object_type, (num_instances, _)) in self.object_type_num_instances.iter() {
-            for (resource_id, resource) in self.objects.iter().find(|(_, obj)| obj.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_resources() {
+            for (resource_id, resource) in self.objects.iter().find(|(_, obj)| obj.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    GraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
                         match Self::create_dynamic_uniform_buffer(*object_type, resource_id, *num_instances, buffer.clone(), &mut HashMap::new(), &mut HashMap::new(), &mut new_dynamic_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
                     },
-                    x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported. (This happened when trying to remove objects)"),
                 }
             }
         }
@@ -522,7 +584,8 @@ impl DataUsedInShader {
             self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(new_dynamic_uniform_buffers.remove(k).unwrap().0)));
         });
 
-        let all_objects = self.objects.iter().map(|(k, v)| (*k, ObjectType(v.get_vertices_and_indices_hash()), v.get_object_resources())).collect::<Vec<_>>();
+        let all_objects = self.objects.iter().map(|(k, v)| (k, v)).collect::<Vec<_>>();
+        
         Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut self.object_id_uniform_buffer_dynamic_bytes_indices);
         
         Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &mut self.dynamic_uniform_buffers, &self.object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
@@ -555,13 +618,13 @@ impl DataUsedInShader {
         self.object_global_resource_data_getters.iter().for_each(|((object_type, resource_id), resource_callback)| {
             let resource = resource_callback();
             match resource {
-                GraphicsResourceType::UniformBuffer(data) => {
+                ObjectTypeGraphicsResourceType::UniformBuffer(data) => {
                     let allocation = self.uniform_buffers.get(&(object_type.clone(), *resource_id)).expect("Uniform buffer not found for object type. This should never happen. Was the uniform buffer added to the object type?");
                     unsafe {
                         std::ptr::copy_nonoverlapping(data.as_ptr() as *const std::ffi::c_void, allocation.get_uniform_pointers()[current_frame], (allocation.get_memory_end()-allocation.get_memory_start()) as usize);
                     }
                 },
-                GraphicsResourceType::Texture(image) => (), //TODO: Implement texture update
+                ObjectTypeGraphicsResourceType::Texture(image) => (), //TODO: Implement texture update
                 _ => eprintln!("Dynamic buffer type not supported for global resource data update."),
             };
         });
@@ -725,7 +788,7 @@ impl DataUsedInShader {
         descriptor_sets
     }
 
-    fn get_object_type_data_and_num_instances(objects_to_add: &[(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)]) -> (HashMap<VerticesIndicesHash, (Vec<u8>, Vec<u32>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, HashMap<ObjectType, (NumInstances, NumIndices)>) {
+    fn get_object_type_data_and_num_instances(objects_to_add: &[(ObjectID, Box<dyn Renderable>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)]) -> (HashMap<VerticesIndicesHash, (Vec<u8>, Vec<u32>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>, HashMap<ObjectType, (NumInstances, NumIndices)>) {
         let mut object_type_data = HashMap::new();
         let mut object_type_num_instances = HashMap::new();
         objects_to_add.iter().for_each(|(_, object, callbacks)| {
@@ -756,7 +819,7 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn add_object_vertices_and_indices_if_new_object_type(object_type: ObjectType, object_type_data: &HashMap<VerticesIndicesHash, (Vec<u8>, Vec<u32>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, object_type_vertices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, object_type_indices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, vertices_data: &mut Vec<u8>, indices_data: &mut Vec<u8>) -> Result<(), Cow<'static, str>> {
+    fn add_object_vertices_and_indices_if_new_object_type(object_type: ObjectType, object_type_data: &HashMap<VerticesIndicesHash, (Vec<u8>, Vec<u32>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>, object_type_vertices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, object_type_indices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, vertices_data: &mut Vec<u8>, indices_data: &mut Vec<u8>) -> Result<(), Cow<'static, str>> {
         if !object_type_vertices_bytes_indices.contains_key(&object_type) {
             let (object_vertices_data, object_indices, resource_callbacks) = object_type_data.get(&object_type.0).unwrap();
             let object_indices_data = object_indices.iter().map(|x| x.to_ne_bytes()).flatten().collect::<Vec<u8>>();
@@ -768,7 +831,7 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn add_static_resource_callbacks_to_object_global_resource_update_callback_if_new_object_type(object_type: ObjectType, object_type_data: &HashMap<VerticesIndicesHash, (Vec<u8>, Vec<u32>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, object_global_resource_update_callback: &mut HashMap<(ObjectType, ResourceID), fn() -> GraphicsResourceType>) {
+    fn add_static_resource_callbacks_to_object_global_resource_update_callback_if_new_object_type(object_type: ObjectType, object_type_data: &HashMap<VerticesIndicesHash, (Vec<u8>, Vec<u32>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>, object_global_resource_update_callback: &mut HashMap<(ObjectType, ResourceID), fn() -> ObjectTypeGraphicsResourceType>) {
         let resource_callbacks = &object_type_data.get(&object_type.0).unwrap().2;
         for (resource_id, resource_callback, _) in resource_callbacks.iter() {
             if object_global_resource_update_callback.contains_key(&(object_type, *resource_id)) {
@@ -845,30 +908,30 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn create_dynamic_uniform_buffer_byte_indices(objects_to_add: &[(ObjectID, ObjectType, Vec<(ResourceID, Arc<RwLock<dyn GraphicsResource>>)>)], object_id_uniform_buffer_dynamic_bytes_indices: &mut HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>) {
+    fn create_dynamic_uniform_buffer_byte_indices(objects_to_add: &[(&ObjectID, &Box<dyn Renderable>)], object_id_uniform_buffer_dynamic_bytes_indices: &mut HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>) {
         let mut number_of_allocated_dynamic_uniform_buffers_per_object_and_resource_id = HashMap::new();
-        objects_to_add.iter().for_each(|(object_id, object_type, resources)| {
-            for (resource_id, resource) in resources {
+        objects_to_add.iter().for_each(|(object_id, object)| {
+            let object_type = ObjectType(object.get_vertices_and_indices_hash());
+            object.get_object_instance_resources().iter().for_each(|(resource_id, resource)| {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    GraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        let current_resource_allocation_number = number_of_allocated_dynamic_uniform_buffers_per_object_and_resource_id.entry((*object_id, resource_id)).or_insert(0);
-                        object_id_uniform_buffer_dynamic_bytes_indices.insert((*object_id, *resource_id), (Inclusive(*current_resource_allocation_number as usize *buffer.len()), Exclusive(((*current_resource_allocation_number + 1) as usize * buffer.len()) - 1)));
+                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                        let current_resource_allocation_number = number_of_allocated_dynamic_uniform_buffers_per_object_and_resource_id.entry((object_type, *resource_id)).or_insert(0);
+                        object_id_uniform_buffer_dynamic_bytes_indices.insert((**object_id, *resource_id), (Inclusive(*current_resource_allocation_number as usize *buffer.len()), Exclusive(((*current_resource_allocation_number + 1) as usize * buffer.len()) - 1)));
                         *current_resource_allocation_number += 1;
-                    },
-                    x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. If you want to use the same buffer for all objects of this type, use the static resource callbacks. Currently only dynamic uniform buffers are supported."),
+                    }
                 }
-            }
+            });
         });
     }
 
     fn copy_dynamic_buffer_data_to_gpu(objects: &HashMap<ObjectID, Box<dyn Renderable>>, dynamic_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_id_uniform_buffer_dynamic_bytes_indices: &HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>, current_frame: usize) {
         objects.iter().for_each(|(object_id, object)| {
             let object_type = ObjectType(object.get_vertices_and_indices_hash());
-            for (resource_id, resource) in object.get_object_resources() {
+            for (resource_id, resource) in object.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    GraphicsResourceType::DynamicUniformBuffer(buffer) => {
+                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
                         let (allocation_info, alloc_buffer) = dynamic_uniform_buffers.get_mut(&(object_type, resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the dynamic uniform buffer added to the object type?");
                         let (start, end) = object_id_uniform_buffer_dynamic_bytes_indices.get(&(*object_id, resource_id)).expect("Dynamic uniform buffer bytes indices not found for object id. This should never happen. Was the dynamic uniform buffer added to the object id?");
                         if buffer.len() != (end.0 - start.0 + 1) as usize {
@@ -876,7 +939,6 @@ impl DataUsedInShader {
                         }
                         alloc_buffer[(start.0 as usize)..(end.0 as usize)].copy_from_slice(&buffer[(start.0 as usize)..(end.0 as usize + 1)]);
                     },
-                    x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. Currently only dynamic uniform buffers are supported."),
                 }
             }
         });

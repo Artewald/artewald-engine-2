@@ -4,7 +4,7 @@ use ash::{extensions::{ext::DebugUtils, khr::{Surface, Swapchain}}, vk::{self, D
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::window::Window;
 
-use crate::{graphics_objects::{GraphicsObject, ObjectToRender, Renderable, ResourceID, UniformBufferObject}, pipeline_manager::{GraphicsResourceType, PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, object_manager::ObjectManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{GraphicsObject, Renderable, ResourceID, UniformBufferObject}, pipeline_manager::{ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, object_manager::ObjectManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
 pub struct ObjectID(pub usize);
@@ -1111,44 +1111,24 @@ impl VkController {
 
 
 pub trait VkControllerGraphicsObjectsControl<T: Vertex + Clone> {
-    fn add_objects_to_render(&mut self, original_objects: Vec<(Arc<RwLock<dyn GraphicsObject<T>>>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>>;
+    fn add_objects_to_render(&mut self, original_objects: Vec<(Arc<RwLock<dyn GraphicsObject<T>>>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>>;
 }
 
 impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkController {
-    fn add_objects_to_render(&mut self, original_objects: Vec<(Arc<RwLock<dyn GraphicsObject<T>>>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>> {
+    fn add_objects_to_render(&mut self, original_objects: Vec<(Arc<RwLock<dyn GraphicsObject<T>>>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>> {
         let object_ids = self.object_manager.generate_currently_unused_ids(original_objects.len())?;
         let mut object_id_to_object = Vec::with_capacity(original_objects.len());
         let mut objects_to_render = Vec::with_capacity(original_objects.len());
         let mut i = 0;
         for (object, resources) in original_objects {
             let object_id = object_ids[i];
-            let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, object.clone(), self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, self.swapchain_extent, &mut self.graphics_pipeline_manager, &mut self.allocator)?);
+            let object_to_render = Box::new(object.clone());
             objects_to_render.push((object_id, object_to_render as Box<dyn Renderable>, resources));
             object_id_to_object.push((object_id, object.clone()));
             i += 1;
         }
-        self.object_manager.add_objects(objects_to_render, &self.device, &self.instance, &self.physical_device, &self.command_pool, &self.descriptor_pool, &self.graphics_queue, &mut self.sampler_manager, self.current_frame, &mut self.allocator)?;
+        self.object_manager.add_objects(objects_to_render, &self.device, &self.instance, &self.physical_device, &self.command_pool, &self.descriptor_pool, &self.graphics_queue, &mut self.sampler_manager, self.msaa_samples, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), self.current_frame, &mut self.allocator)?;
         Ok(object_id_to_object)
-        // dbg!(self.object_id_to_pipeline.len());
-        // dbg!(self.object_id_to_vertices_indices_hash.len());
-        // dbg!(self.objects_to_render.len());
-        // let object_id = ObjectID(object_id);
-        // let object_to_render = Box::new(ObjectToRender::new(&self.device, &self.instance, &self.physical_device, original_objects, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.command_pool, &self.graphics_queue, self.msaa_samples, &self.descriptor_pool, &mut self.sampler_manager, self.swapchain_extent, &mut self.graphics_pipeline_manager, &mut self.allocator)?);
-        // let pipeline_config = object_to_render.get_pipeline_config();
-        // let vih = object_to_render.get_vertices_and_indices_hash();
-        // self.object_id_to_pipeline.insert(object_id, pipeline_config.clone());
-        // self.object_id_to_vertices_indices_hash.insert(object_id, vih);
-        // let objects_to_render = self.objects_to_render.entry((pipeline_config, vih)).or_insert({
-        //     let (vertex_allocation, index_allocation) = object_to_render.create_vertex_and_index_allocation(&self.command_pool, &self.graphics_queue, &mut self.allocator)?;
-        //     ObjectsToRender {
-        //         vertex_allocation: Some(vertex_allocation),
-        //         index_allocation: Some(index_allocation),
-        //         num_indices: object_to_render.get_num_indices() as u32,
-        //         objects: Vec::new(),
-        //     }
-        // });
-        // objects_to_render.objects.push((object_id, object_to_render));
-        // Ok(object_id)
     }
 }
 
