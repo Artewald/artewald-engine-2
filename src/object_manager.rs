@@ -25,19 +25,19 @@ enum DataToRemove {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct Inclusive(pub usize);
+pub struct Inclusive(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct Exclusive(pub usize);
+pub struct Exclusive(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct NumInstances(pub usize);
+pub struct NumInstances(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct Counter(pub usize);
+pub struct Counter(pub usize);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct NumIndices(pub usize);
+pub struct NumIndices(pub usize);
 
 impl Counter {
     pub fn increment(&mut self) {
@@ -89,19 +89,20 @@ impl ObjectManager {
             let mut hasher = DefaultHasher::new();
             pipeline_config.hash(&mut hasher);
             let pipeline_hash = hasher.finish();
-            if !self.data_used_in_shader.contains_key(&pipeline_config) {
+            // if !self.data_used_in_shader.contains_key(&pipeline_config) {
+                
+            // }
+            let object_ids = objects_with_pipeline_to_add.iter().map(|(id, _, _)| *id).collect::<Vec<_>>();
+            if let Entry::Occupied(mut data_used_in_shader) = self.data_used_in_shader.entry(pipeline_config.clone()) {
+                data_used_in_shader.get_mut().add_objects(objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
+            } else {
                 let data_used_in_shader = DataUsedInShader::new(objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
                 self.data_used_in_shader.insert(pipeline_config.clone(), data_used_in_shader);
                 self.pipeline_config_hash_to_pipeline_config.insert(pipeline_hash, pipeline_config.clone());
-                objects_with_pipeline_to_add.iter().for_each(|(id, _, _)| {
-                    self.object_id_to_pipeline_hash.insert(*id, pipeline_hash);
-                });
             }
-            if let Entry::Occupied(data_used_in_shader) = self.data_used_in_shader.entry(pipeline_config.clone()) {
-                data_used_in_shader.get().add_objects(objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
-            } else {
-                return Err(Cow::from(format!("Could not create data used for rendering object with ids {:?}. This should never happen!", objects_with_pipeline_to_add.iter().map(|(id, _, _)| id).collect::<Vec<_>>())));
-            }
+            object_ids.iter().for_each(|id| {
+                self.object_id_to_pipeline_hash.insert(*id, pipeline_hash);
+            });
         }
 
         Ok(())
@@ -117,9 +118,8 @@ impl ObjectManager {
         }
 
         for (pipeline_config, object_ids_to_remove) in pipeline_objects {
-            if let Entry::Occupied(data_used_in_shader) = self.data_used_in_shader.entry(pipeline_config.clone()) {
-                let data_used_in_shader = data_used_in_shader.get();
-                data_used_in_shader.remove_objects(object_ids_to_remove, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, &pipeline_config, sampler_manager, current_frame, allocator)?;
+            if let Entry::Occupied(mut data_used_in_shader) = self.data_used_in_shader.entry(pipeline_config.clone()) {
+                data_used_in_shader.get_mut().remove_objects(object_ids_to_remove, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, &pipeline_config, sampler_manager, current_frame, allocator)?;
             } else {
                 eprintln!("Could not remove objects with ids {:?}. Because it could not find any data used for the shaders with the pipeline config for the following shaders {:?}", object_ids_to_remove, pipeline_config.get_shader_paths());
             }
@@ -135,12 +135,6 @@ impl ObjectManager {
         self.data_used_in_shader = HashMap::new();
         self.pipeline_config_hash_to_pipeline_config = HashMap::new();
         self.object_id_to_pipeline_hash = HashMap::new();
-    }
-
-    pub fn update_all_uniform_data(&mut self, current_frame: usize) {
-        self.data_used_in_shader.iter_mut().for_each(|(_, data_used_in_shader)| {
-            data_used_in_shader.update_all_uniform_data(current_frame);
-        });
     }
 
     pub fn borrow_objects_to_render(&self) -> &HashMap<PipelineConfig, DataUsedInShader> {
@@ -162,6 +156,12 @@ impl ObjectManager {
             ids.push(ObjectID(object_id));
         }
         Ok(ids)
+    }
+
+    pub fn update_objects(&mut self, device: &Device,descriptor_pool: &DescriptorPool, current_frame: usize, allocator: &mut VkAllocator) {
+        self.data_used_in_shader.iter_mut().for_each(|(_, data_used_in_shader)| {
+            data_used_in_shader.update(device, descriptor_pool, current_frame, allocator)
+        });
     }
 
     fn get_object_types(&self) -> HashSet<ObjectType> {
@@ -274,7 +274,7 @@ impl DataUsedInShader {
 
         Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut object_id_uniform_buffer_dynamic_bytes_indices);
         
-        Self::copy_dynamic_buffer_data_to_gpu(&objects, &dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
+        Self::copy_dynamic_buffer_data_to_gpu(&objects, &mut dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
 
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
@@ -289,7 +289,7 @@ impl DataUsedInShader {
             },
         };
 
-        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, uniform_buffers, textures, dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, &uniform_buffers, &textures, &dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
         Ok(Self {
             objects,
@@ -382,8 +382,8 @@ impl DataUsedInShader {
 
         Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut object_id_uniform_buffer_dynamic_bytes_indices);
         
-        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
-        Self::copy_dynamic_buffer_data_to_gpu(&mut new_objects, &dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
+        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &mut dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
+        Self::copy_dynamic_buffer_data_to_gpu(&mut new_objects, &mut dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
 
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
@@ -398,21 +398,24 @@ impl DataUsedInShader {
             },
         };
 
-        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, uniform_buffers, textures, dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, &uniform_buffers, &textures, &dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
-        self.textures.iter_mut().filter(|(k, _)| textures.contains_key(k)).for_each(|(k, v)| {
+        let texture_keys = textures.keys().cloned().collect::<Vec<_>>();
+        self.textures.iter_mut().filter(|(k, _)| texture_keys.contains(k)).for_each(|(k, v)| {
             std::mem::swap(v, textures.get_mut(k).unwrap());
             self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(textures.remove(k).unwrap().0)));
         });
         self.textures.extend(textures);
 
-        self.uniform_buffers.iter_mut().filter(|(k, _)| uniform_buffers.contains_key(k)).for_each(|(k, v)| {
+        let uniform_keys = uniform_buffers.keys().cloned().collect::<Vec<_>>();
+        self.uniform_buffers.iter_mut().filter(|(k, _)| uniform_keys.contains(k)).for_each(|(k, v)| {
             std::mem::swap(v, uniform_buffers.get_mut(k).unwrap());
             self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(uniform_buffers.remove(k).unwrap())));
         });
         self.uniform_buffers.extend(uniform_buffers);
         
-        self.dynamic_uniform_buffers.iter_mut().filter(|(k, _)| dynamic_uniform_buffers.contains_key(k)).for_each(|(k, v)| {
+        let dynamic_uniform_keys = dynamic_uniform_buffers.keys().cloned().collect::<Vec<_>>();
+        self.dynamic_uniform_buffers.iter_mut().filter(|(k, _)| dynamic_uniform_keys.contains(k)).for_each(|(k, v)| {
             std::mem::swap(v, dynamic_uniform_buffers.get_mut(k).unwrap());
             self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(dynamic_uniform_buffers.remove(k).unwrap().0)));
         });
@@ -422,7 +425,7 @@ impl DataUsedInShader {
     }
 
     fn remove_objects(&mut self, object_ids_to_remove: Vec<ObjectID>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, pipeline_config: &PipelineConfig, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
-        let mut objects_to_remove: Vec<(ObjectID, Box<dyn Renderable>)>;
+        let mut objects_to_remove: Vec<(ObjectID, Box<dyn Renderable>)> = Vec::new();
         object_ids_to_remove.iter().for_each(|id| {
             if !self.objects.contains_key(id) {
                 eprintln!("Object with id {:?} not found in object manager. So we are skipping it.", id);
@@ -435,7 +438,7 @@ impl DataUsedInShader {
             return Ok(());
         }
 
-        let mut num_object_types_to_remove: HashMap<ObjectType, NumInstances>;
+        let mut num_object_types_to_remove: HashMap<ObjectType, NumInstances> = HashMap::new();
         objects_to_remove.iter().for_each(|(_, object)| {
             let object_type = ObjectType(object.get_vertices_and_indices_hash());
             let e = num_object_types_to_remove.entry(object_type).or_insert(NumInstances(0));
@@ -474,16 +477,20 @@ impl DataUsedInShader {
                 }
             });
 
-            self.textures.keys().cloned().filter(|k| k.0 == *object_type).for_each(|k| {
+            let texture_keys = self.textures.keys().cloned().filter(|k| k.0 == *object_type).collect::<Vec<_>>();
+            texture_keys.iter().filter(|k| k.0 == *object_type).for_each(|k| {
                 let allocation = self.textures.remove(&k).unwrap().0;
                 self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(allocation)));
             });
-            self.uniform_buffers.keys().cloned().filter(|k| k.0 == *object_type).for_each(|k| {
+
+            let uniform_keys = self.uniform_buffers.keys().cloned().filter(|k| k.0 == *object_type).collect::<Vec<_>>();
+            uniform_keys.iter().filter(|k| k.0 == *object_type).for_each(|k| {
                 let allocation = self.uniform_buffers.remove(&k).unwrap();
                 self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(allocation)));
             });
 
-            self.dynamic_uniform_buffers.keys().cloned().filter(|k| k.0 == *object_type).for_each(|k| {
+            let dynamic_uniform_keys = self.dynamic_uniform_buffers.keys().cloned().filter(|k| k.0 == *object_type).collect::<Vec<_>>();
+            dynamic_uniform_keys.iter().filter(|k| k.0 == *object_type).for_each(|k| {
                 let (allocation, _) = self.dynamic_uniform_buffers.remove(&k).unwrap();
                 self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(allocation)));
             });
@@ -509,7 +516,8 @@ impl DataUsedInShader {
             }
         }
 
-        self.dynamic_uniform_buffers.iter_mut().filter(|(k, _)| new_dynamic_uniform_buffers.contains_key(k)).for_each(|(k, v)| {
+        let new_dynamic_uniform_keys = new_dynamic_uniform_buffers.keys().cloned().collect::<Vec<_>>();
+        self.dynamic_uniform_buffers.iter_mut().filter(|(k, _)| new_dynamic_uniform_keys.contains(k)).for_each(|(k, v)| {
             std::mem::swap(v, new_dynamic_uniform_buffers.get_mut(k).unwrap());
             self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(new_dynamic_uniform_buffers.remove(k).unwrap().0)));
         });
@@ -517,13 +525,13 @@ impl DataUsedInShader {
         let all_objects = self.objects.iter().map(|(k, v)| (*k, ObjectType(v.get_vertices_and_indices_hash()), v.get_object_resources())).collect::<Vec<_>>();
         Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut self.object_id_uniform_buffer_dynamic_bytes_indices);
         
-        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &self.dynamic_uniform_buffers, &self.object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
+        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &mut self.dynamic_uniform_buffers, &self.object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
 
-        let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &self.vertices.1, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
+        let mut vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &self.vertices.1, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
             Err(e) => return Err(Cow::from(e)),
         };
-        let index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &self.indices.1, vk::BufferUsageFlags::INDEX_BUFFER, false) {
+        let mut index_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &self.indices.1, vk::BufferUsageFlags::INDEX_BUFFER, false) {
             Ok(alloc) => alloc,
             Err(e) => {
                 let mut error_str = e.to_string();
@@ -531,19 +539,19 @@ impl DataUsedInShader {
                 return Err(Cow::from(error_str));
             },
         };
-        std::mem::swap(&mut self.vertices.0, &mut &vertex_allocation);
-        std::mem::swap(&mut self.indices.0, &mut &index_allocation);
+        std::mem::swap(&mut self.vertices.0, &mut vertex_allocation);
+        std::mem::swap(&mut self.indices.0, &mut index_allocation);
         self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(vertex_allocation)));
         self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(index_allocation)));
 
         let object_types = self.objects.iter().map(|(_, v)| ObjectType(v.get_vertices_and_indices_hash())).collect::<HashSet<_>>();
-        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &self.descriptor_type_data, self.uniform_buffers, self.textures, self.dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &self.descriptor_type_data, &self.uniform_buffers, &self.textures, &self.dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
         Ok(())
     }
 
     fn update_all_uniform_data(&mut self, current_frame: usize) {
-        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &self.dynamic_uniform_buffers, &self.object_id_uniform_buffer_dynamic_bytes_indices, current_frame);
+        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &mut self.dynamic_uniform_buffers, &self.object_id_uniform_buffer_dynamic_bytes_indices, current_frame);
         self.object_global_resource_data_getters.iter().for_each(|((object_type, resource_id), resource_callback)| {
             let resource = resource_callback();
             match resource {
@@ -596,7 +604,7 @@ impl DataUsedInShader {
         
     }
 
-    fn create_descriptor_sets(device: &Device, descriptor_pool: &DescriptorPool, descriptor_set_layout: &DescriptorSetLayout, object_types: &HashSet<ObjectType>, descriptor_type_data: &[(ResourceID, DescriptorType, DescriptorSetLayoutBinding)], uniform_buffers: HashMap<(ObjectType, ResourceID), AllocationInfo>, textures: HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, frames_in_flight: u32, allocator: &mut VkAllocator) -> HashMap<ObjectType, Vec<DescriptorSet>> {
+    fn create_descriptor_sets(device: &Device, descriptor_pool: &DescriptorPool, descriptor_set_layout: &DescriptorSetLayout, object_types: &HashSet<ObjectType>, descriptor_type_data: &[(ResourceID, DescriptorType, DescriptorSetLayoutBinding)], uniform_buffers: &HashMap<(ObjectType, ResourceID), AllocationInfo>, textures: &HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, dynamic_uniform_buffers: &HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, frames_in_flight: u32, allocator: &mut VkAllocator) -> HashMap<ObjectType, Vec<DescriptorSet>> {
         let mut descriptor_sets = HashMap::new();
 
         for object_type in object_types {
@@ -761,7 +769,7 @@ impl DataUsedInShader {
     }
 
     fn add_static_resource_callbacks_to_object_global_resource_update_callback_if_new_object_type(object_type: ObjectType, object_type_data: &HashMap<VerticesIndicesHash, (Vec<u8>, Vec<u32>, Vec<(ResourceID, fn() -> GraphicsResourceType, DescriptorSetLayoutBinding)>)>, object_global_resource_update_callback: &mut HashMap<(ObjectType, ResourceID), fn() -> GraphicsResourceType>) {
-        let resource_callbacks = object_type_data.get(&object_type.0).unwrap().2;
+        let resource_callbacks = &object_type_data.get(&object_type.0).unwrap().2;
         for (resource_id, resource_callback, _) in resource_callbacks.iter() {
             if object_global_resource_update_callback.contains_key(&(object_type, *resource_id)) {
                 continue;
@@ -854,19 +862,19 @@ impl DataUsedInShader {
         });
     }
 
-    fn copy_dynamic_buffer_data_to_gpu(objects: &HashMap<ObjectID, Box<dyn Renderable>>, dynamic_uniform_buffers: &HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_id_uniform_buffer_dynamic_bytes_indices: &HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>, current_frame: usize) {
+    fn copy_dynamic_buffer_data_to_gpu(objects: &HashMap<ObjectID, Box<dyn Renderable>>, dynamic_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_id_uniform_buffer_dynamic_bytes_indices: &HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>, current_frame: usize) {
         objects.iter().for_each(|(object_id, object)| {
             let object_type = ObjectType(object.get_vertices_and_indices_hash());
             for (resource_id, resource) in object.get_object_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
                     GraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        let (allocation_info, buffer) = dynamic_uniform_buffers.get(&(object_type, resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the dynamic uniform buffer added to the object type?");
+                        let (allocation_info, alloc_buffer) = dynamic_uniform_buffers.get_mut(&(object_type, resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the dynamic uniform buffer added to the object type?");
                         let (start, end) = object_id_uniform_buffer_dynamic_bytes_indices.get(&(*object_id, resource_id)).expect("Dynamic uniform buffer bytes indices not found for object id. This should never happen. Was the dynamic uniform buffer added to the object id?");
                         if buffer.len() != (end.0 - start.0 + 1) as usize {
                             eprintln!("The dynamic uniform buffer size does not match the size of the buffer that was allocated for it. This should never happen.");
                         }
-                        buffer[(start.0 as usize)..(end.0 as usize)].copy_from_slice(&buffer[(start.0 as usize)..(end.0 as usize + 1)]);
+                        alloc_buffer[(start.0 as usize)..(end.0 as usize)].copy_from_slice(&buffer[(start.0 as usize)..(end.0 as usize + 1)]);
                     },
                     x => eprintln!("You cannot attach resource type that is not dynamic/bindless to a specific object type (instance definition), use dynamic buffers instead. Currently only dynamic uniform buffers are supported."),
                 }
@@ -892,8 +900,15 @@ impl DataUsedInShader {
         }
     }
 
-    pub fn update_allocation_to_remove_counter_and_free_allocations_that_are_not_used(&mut self, device: &Device, descriptor_pool: &DescriptorPool, current_frame: u32, allocator: &mut VkAllocator) {
-        let last_frame_index = LastFrameIndex(current_frame as usize);
+    fn update(&mut self, device: &Device, descriptor_pool: &DescriptorPool, current_frame: usize, allocator: &mut VkAllocator) {
+        // Update the uniform data
+        self.update_all_uniform_data(current_frame);
+        // Update the allocations to remove counter and free allocations that are not used
+        self.update_allocation_to_remove_counter_and_free_allocations_that_are_not_used(device, descriptor_pool, current_frame, allocator);
+    }
+
+    fn update_allocation_to_remove_counter_and_free_allocations_that_are_not_used(&mut self, device: &Device, descriptor_pool: &DescriptorPool, current_frame: usize, allocator: &mut VkAllocator) {
+        let last_frame_index = LastFrameIndex(current_frame);
         if last_frame_index.0 == self.allocations_and_descriptor_sets_to_remove.0.0 {
             return;
         }
@@ -905,7 +920,7 @@ impl DataUsedInShader {
             if counter.0 >= VkController::MAX_FRAMES_IN_FLIGHT {
                 match data_to_remove {
                     DataToRemove::Allocation(alloc) => {
-                        allocator.free_memory_allocation(*alloc);
+                        allocator.free_memory_allocation(alloc.clone()).expect("Failed to free memory allocation. Which should never happen!");
                     },
                     DataToRemove::DescriptorSets(descriptor_sets) => {
                         descriptor_sets_to_remove.extend(descriptor_sets.to_owned());
@@ -915,7 +930,7 @@ impl DataUsedInShader {
         });
 
         unsafe {
-            device.free_descriptor_sets(*descriptor_pool, &descriptor_sets_to_remove);
+            device.free_descriptor_sets(*descriptor_pool, &descriptor_sets_to_remove).expect("Failed to free descriptor sets. Which should never happen!");
         }
 
         self.allocations_and_descriptor_sets_to_remove.1.retain(|(counter, _)| counter.0 < VkController::MAX_FRAMES_IN_FLIGHT);

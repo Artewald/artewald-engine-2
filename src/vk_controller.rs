@@ -857,7 +857,7 @@ impl VkController {
 
         let cmd_buffer = self.command_buffers[self.current_frame][0];
 
-        self.object_manager.update_all_uniform_data(self.current_frame);
+        self.object_manager.update_objects(&self.device, &self.descriptor_pool, self.current_frame, &mut self.allocator);
         Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.object_manager, &mut self.graphics_pipeline_manager, self.current_frame, &mut self.allocator);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
