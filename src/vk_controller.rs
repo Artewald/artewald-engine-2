@@ -1054,8 +1054,8 @@ impl VkController {
     }
 
     // The object will not be remove until the all frames in flight have passed
-    pub fn remove_objects_to_render(&mut self, object_ids: Vec<ObjectID>) {
-        self.object_manager.remove_objects(object_ids, &self.device, &self.instance, &self.physical_device, &self.command_pool, &self.descriptor_pool, &self.graphics_queue, &mut self.sampler_manager, self.current_frame, &mut self.allocator);
+    pub fn remove_objects_to_render(&mut self, object_ids: Vec<ObjectID>) -> Result<(), Cow<'static, str>> {
+        self.object_manager.remove_objects(object_ids, &self.command_pool, &self.graphics_queue, self.current_frame, &mut self.allocator)
     }
 }
 
