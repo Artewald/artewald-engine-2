@@ -216,8 +216,8 @@ fn main() {
         }
         swapchain_extent = vk_controller.get_swapchain_extent();
         
-        obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
-        obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
+        obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 1.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
+        obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 1.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
 
         vk_controller.draw_frame();
         frame_count += 1;
