@@ -473,11 +473,10 @@ impl VkController {
 
             self.sampler_manager.destroy_samplers(&self.device, &mut self.allocator);
 
-            // self.allocator.free_memory_allocation(self.uniform_allocation.take().unwrap()).unwrap();
+            self.object_manager.destroy_all_objects(&self.device, &self.descriptor_pool, &mut self.allocator);
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
-            self.object_manager.destroy_all_objects(&self.device, &self.descriptor_pool, &mut self.allocator);
             
             self.graphics_pipeline_manager.destroy(&self.device, &mut self.allocator);
 
@@ -983,6 +982,7 @@ impl VkController {
             pool_size_count: pool_sizes.len() as u32,
             p_pool_sizes: pool_sizes.as_ptr(),
             max_sets: Self::MAX_FRAMES_IN_FLIGHT as u32 * Self::MAX_OBJECT_TYPES as u32,
+            flags: vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
             ..Default::default()
         };
 
