@@ -84,11 +84,9 @@ fn main() {
         texture: texture.clone(),
     }));
 
-    
-
     let object_ids = vk_controller.add_objects_to_render(vec![obj1.clone(), obj2.clone()]).unwrap();
     
-    // let num_vertices = 12;//49152*4;
+    let num_vertices = 12;//49152*4;
 
     // println!("1");
     // let (vertices_one, indices_one) = generate_circle_type_one(1.0, num_vertices);
@@ -97,7 +95,7 @@ fn main() {
     // println!("3");
     // let start_time = Instant::now();
     // println!("Start time: {:?}", start_time.elapsed().as_secs_f32());
-    // let (vertices_three, indices_three) = generate_circle_type_three(1.0, num_vertices);
+    let (vertices_three, indices_three) = generate_circle_type_three(1.0, num_vertices);
     // println!("End time: {:?}", start_time.elapsed().as_secs_f32());
     // println!("4");
 
@@ -137,23 +135,26 @@ fn main() {
     //     descriptor_set_layout: None,
     // }));
 
-    // let obj_three = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
-    //     vertices: vertices_three,
-    //     indices: indices_three,
-    //     shaders: vec![
-    //         ShaderInfo {
-    //             path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
-    //             shader_stage_flag: vk::ShaderStageFlags::VERTEX,
-    //             entry_point: CString::new("main").unwrap(),
-    //         },
-    //         ShaderInfo {
-    //             path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
-    //             shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
-    //             entry_point: CString::new("main").unwrap(),
-    //         }
-    //     ],
-    //     descriptor_set_layout: None,
-    // }));
+    let obj_three = Arc::new(RwLock::new(TwoDPositionSimpleRenderableObject {
+        vertices: vertices_three,
+        indices: indices_three,
+        shaders: vec![
+            ShaderInfo {
+                path: std::path::PathBuf::from("./assets/shaders/circle.vert"),
+                shader_stage_flag: vk::ShaderStageFlags::VERTEX,
+                entry_point: CString::new("main").unwrap(),
+            },
+            ShaderInfo {
+                path: std::path::PathBuf::from("./assets/shaders/circle.frag"),
+                shader_stage_flag: vk::ShaderStageFlags::FRAGMENT,
+                entry_point: CString::new("main").unwrap(),
+            }
+        ],
+    }));
+
+    dbg!("Now adding object three!");
+    let _ = vk_controller.add_objects_to_render(vec![obj_three.clone()]).unwrap();
+    dbg!("Test!");
 
     // let mut current_object_id = vk_controller.add_object_to_render(obj_three.clone()).unwrap();
 

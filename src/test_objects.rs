@@ -114,7 +114,6 @@ pub struct TwoDPositionSimpleRenderableObject {
     pub vertices: Vec<OnlyTwoDPositionVertex>,
     pub indices: Vec<u32>,
     pub shaders: Vec<ShaderInfo>,
-    pub descriptor_set_layout: Option<DescriptorSetLayout>,
 }
 
 impl GraphicsObject<OnlyTwoDPositionVertex> for TwoDPositionSimpleRenderableObject {

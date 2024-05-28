@@ -17,7 +17,7 @@ use ash::{vk::{self, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, 
 use image::DynamicImage;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
-use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{self, ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager}, sampler_manager::{SamplerConfig, SamplerManager}, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, ReferenceObjectID, VerticesIndicesHash, VkController}};
+use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{self, ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager}, sampler_manager::{SamplerConfig, SamplerManager}, vertex, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, ReferenceObjectID, VerticesIndicesHash, VkController}};
 
 enum DataToRemove {
     Allocation(AllocationInfo),
@@ -70,10 +70,7 @@ impl ObjectManager {
 
     pub fn add_objects(&mut self, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format, swapchain_extent: &Extent2D, current_frame: usize, pipeline_manager: &mut PipelineManager, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let all_object_types_including_new_ones = self.get_object_types();
-        objects_to_add.iter().for_each(|(_, object)| {
-            let object_type = ObjectType(object.get_vertices_and_indices_hash());
-        });
-
+        
         if all_object_types_including_new_ones.len() > VkController::MAX_OBJECT_TYPES {
             return Err(Cow::from(format!("The maximum number of object types is {}. If you add the given objects you would have {} object types, which is not supported (this is related to how many descriptor sets that are in the descriptor set pool).", VkController::MAX_OBJECT_TYPES, all_object_types_including_new_ones.len())));
         }
@@ -158,6 +155,7 @@ impl ObjectManager {
             // if !self.data_used_in_shader.contains_key(&pipeline_config) {
                 
             // }
+
             let object_ids = objects_with_pipeline_to_add.iter().map(|(id, _)| *id).collect::<Vec<_>>();
             if let Entry::Occupied(mut data_used_in_shader) = self.data_used_in_shader.entry(pipeline_config.clone()) {
                 data_used_in_shader.get_mut().add_objects(&pipeline_config, objects_with_pipeline_to_add, device, instance, physical_device, command_pool, descriptor_pool, graphics_queue, sampler_manager, current_frame, allocator)?;
@@ -171,13 +169,13 @@ impl ObjectManager {
             });
         }
 
+
         object_type_to_pipeline.iter().for_each(|(object_type, pipeline_config)| {
             let mut hasher = DefaultHasher::new();
             pipeline_config.hash(&mut hasher);
             let pipeline_hash = hasher.finish();
             self.object_type_to_pipeline_hash.insert(object_type.clone(), pipeline_hash);
         });
-
         Ok(())
     }
 
@@ -304,11 +302,10 @@ impl DataUsedInShader {
                         if !descriptor_type_data.iter().any(|x| x.0 == resource_id) {
                             descriptor_type_data.push((resource_id, DescriptorType::STORAGE_BUFFER, resource_lock.get_descriptor_set_layout_binding()));
                         }
-
-                        Self::add_object_vertices_and_indices_if_new_object_type(*object_type, object, &object_type_references, &mut object_type_vertices_bytes_indices, &mut object_type_indices_bytes_indices, &mut vertices_data, &mut indices_data).unwrap();
                     },
                 }
             } 
+            Self::add_object_vertices_and_indices_if_new_object_type(*object_type, object, &object_type_references, &mut object_type_vertices_bytes_indices, &mut object_type_indices_bytes_indices, &mut vertices_data, &mut indices_data).unwrap();
         }
         
         for object in objects_to_add {
@@ -341,7 +338,7 @@ impl DataUsedInShader {
         Self::create_storage_buffer_byte_indices(&all_objects, &mut object_id_storage_buffer_bytes_indices);
         
         Self::copy_storage_buffer_data_to_gpu(&objects, &mut storage_uniform_buffers, &object_id_storage_buffer_bytes_indices, current_frame as usize);
-
+        
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
             Err(e) => return Err(Cow::from(e)),
