@@ -27,9 +27,9 @@ fn main() {
 
     let (vertices, indices) = load_model("./assets/objects/viking_room.obj");
     
-    let mod1 = glm::translate(&glm::identity(), &glm::Vec3::new(-0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+    let mod1 = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
 
-    let mod2 = glm::translate(&glm::identity(), &glm::Vec3::new(0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+    let mod2 = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
 
     let mut proj = glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0);
     proj[(1, 1)] *= -1.0;
@@ -215,20 +215,8 @@ fn main() {
         }
         swapchain_extent = vk_controller.get_swapchain_extent();
         
-        obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
-        obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
-
-        // ubo1 = UniformBufferObject {
-        //     model: glm::translate(&glm::identity(), &glm::Vec3::new(1f32, 0f32, 0f32)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-        //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-        //     proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        // };
-        // ubo1.proj[(1, 1)] *= -1.0;
-        // {
-        //     let obj_locked = obj1.write().unwrap();
-        //     let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
-        //     ubo_locked.buffer = ubo1;
-        // }
+        obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+        obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
 
         vk_controller.draw_frame();
         frame_count += 1;
