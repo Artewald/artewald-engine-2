@@ -30,6 +30,8 @@ pub trait ObjectInstanceGraphicsResource {
     fn get_resource(&self) -> ObjectInstanceGraphicsResourceType;
 }
 
+
+
 #[derive(PartialEq, Eq, Clone)]
 pub struct ShaderInfo {
     pub path: std::path::PathBuf,

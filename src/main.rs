@@ -1,7 +1,7 @@
-use std::{collections::{hash_map, HashMap}, ffi::CString, sync::{Arc, RwLock}, time::Instant};
+use std::{borrow::BorrowMut, collections::{hash_map, HashMap}, ffi::CString, sync::{Arc, RwLock}, time::Instant};
 
 use ash::vk;
-use graphics_objects::{TextureResource, UniformBufferObject, UniformBufferResource};
+use graphics_objects::{TextureResource, UniformBufferResource};
 use pipeline_manager::ShaderInfo;
 use test_objects::{SimpleRenderableObject, TwoDPositionSimpleRenderableObject};
 use vertex::{generate_circle_type_one, generate_circle_type_three, generate_circle_type_two, SimpleVertex};
@@ -27,29 +27,27 @@ fn main() {
 
     let (vertices, indices) = load_model("./assets/objects/viking_room.obj");
     
-    let mut ubo1 = UniformBufferObject {
-        model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-        view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-        proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-    };
-    ubo1.proj[(1, 1)] *= -1.0;
+    let mod1 = glm::translate(&glm::identity(), &glm::Vec3::new(-0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
 
-    let mut ubo2 = UniformBufferObject {
-        model: glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-        view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-        proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-    };
-    ubo2.proj[(1, 1)] *= -1.0;
+    let mod2 = glm::translate(&glm::identity(), &glm::Vec3::new(0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+
+    let mut proj = glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0);
+    proj[(1, 1)] *= -1.0;
+    let view_projection = Arc::new(RwLock::new(UniformBufferResource {
+        buffer: proj * glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+        binding: 1,
+    }));
+
+    let texture = Arc::new(RwLock::new(TextureResource {
+        image: image::open("./assets/images/viking_room.png").unwrap(),
+        binding: 2,
+        stage: vk::ShaderStageFlags::FRAGMENT,
+    }));
 
     let obj1 = Arc::new(RwLock::new(SimpleRenderableObject {
         vertices: vertices.clone(),
         indices: indices.clone(),
-        uniform_buffer: Arc::new(RwLock::new(UniformBufferResource { buffer: ubo1, binding: 0 })),
-        texture: Arc::new(RwLock::new(TextureResource {
-            image: image::open("./assets/images/viking_room.png").unwrap(),
-            binding: 1,
-            stage: vk::ShaderStageFlags::FRAGMENT,
-        })),
+        model_matrix: Arc::new(RwLock::new(UniformBufferResource { buffer: mod1, binding: 0 })),
         shaders: vec![
             ShaderInfo {
                 path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
@@ -62,18 +60,14 @@ fn main() {
                 entry_point: CString::new("main").unwrap(),
             }
         ],
-        descriptor_set_layout: None,
+        view_projection: view_projection.clone(),
+        texture: texture.clone(),
     }));
 
     let obj2 = Arc::new(RwLock::new(SimpleRenderableObject {
         vertices: vertices.clone(),
         indices: indices.clone(),
-        uniform_buffer: Arc::new(RwLock::new(UniformBufferResource { buffer: ubo2, binding: 0 })),
-        texture: Arc::new(RwLock::new(TextureResource {
-            image: image::open("./assets/images/viking_room.png").unwrap(),
-            binding: 1,
-            stage: vk::ShaderStageFlags::FRAGMENT,
-        })),
+        model_matrix: Arc::new(RwLock::new(UniformBufferResource { buffer: mod2, binding: 0 })),
         shaders: vec![
             ShaderInfo {
                 path: std::path::PathBuf::from("./assets/shaders/triangle.vert"),
@@ -86,12 +80,13 @@ fn main() {
                 entry_point: CString::new("main").unwrap(),
             }
         ],
-        descriptor_set_layout: None,
+        view_projection: view_projection.clone(),
+        texture: texture.clone(),
     }));
 
     
 
-    let object_ids = vk_controller.add_objects_to_render(vec![(obj1.clone(), Vec::new()), (obj2.clone(), Vec::new())]).unwrap();
+    let object_ids = vk_controller.add_objects_to_render(vec![obj1.clone(), obj2.clone()]).unwrap();
     
     // let num_vertices = 12;//49152*4;
 
@@ -220,29 +215,20 @@ fn main() {
         }
         swapchain_extent = vk_controller.get_swapchain_extent();
         
-        ubo1 = UniformBufferObject {
-            model: glm::translate(&glm::identity(), &glm::Vec3::new(1f32, 0f32, 0f32)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        };
-        ubo1.proj[(1, 1)] *= -1.0;
-        {
-            let obj_locked = obj1.write().unwrap();
-            let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
-            ubo_locked.buffer = ubo1;
-        }
+        obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+        obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(0.25, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
 
-        ubo2 = UniformBufferObject {
-            model: glm::translate(&glm::identity(), &glm::Vec3::new(-1f32, 0f32, 0f32)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        };
-        ubo2.proj[(1, 1)] *= -1.0;
-        {
-            let obj_locked = obj2.write().unwrap();
-            let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
-            ubo_locked.buffer = ubo1;
-        }
+        // ubo1 = UniformBufferObject {
+        //     model: glm::translate(&glm::identity(), &glm::Vec3::new(1f32, 0f32, 0f32)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
+        //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+        //     proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
+        // };
+        // ubo1.proj[(1, 1)] *= -1.0;
+        // {
+        //     let obj_locked = obj1.write().unwrap();
+        //     let mut ubo_locked = obj_locked.uniform_buffer.write().unwrap();
+        //     ubo_locked.buffer = ubo1;
+        // }
 
         vk_controller.draw_frame();
         frame_count += 1;

@@ -1,13 +1,17 @@
 use std::{borrow::Cow, collections::{HashMap, HashSet}, rc::Rc, sync::{Arc, RwLock}};
 
-use ash::{extensions::{ext::DebugUtils, khr::{Surface, Swapchain}}, vk::{self, DebugUtilsMessengerCreateInfoEXT, DescriptorSetLayoutBinding, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, Entry, Instance};
+use ash::{extensions::{ext::DebugUtils, khr::{Surface, Swapchain}}, vk::{self, DebugUtilsMessengerCreateInfoEXT, DescriptorSetLayoutBinding, DeviceCreateInfo, DeviceQueueCreateInfo, ExtDescriptorIndexingFn, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, Entry, Instance};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
 use winit::window::Window;
 
-use crate::{graphics_objects::{GraphicsObject, Renderable, ResourceID, UniformBufferObject}, pipeline_manager::{ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, object_manager::ObjectManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{GraphicsObject, Renderable, ResourceID}, pipeline_manager::{ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, object_manager::ObjectManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
 #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
 pub struct ObjectID(pub usize);
+
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
+pub struct ReferenceObjectID(pub ObjectID);
+
 type FrameCounter = usize;
 #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
 pub struct VerticesIndicesHash(pub u64);
@@ -52,7 +56,7 @@ pub struct VkController {
     // object_id_to_pipeline: HashMap<ObjectID, PipelineConfig>,
     // object_id_to_vertices_indices_hash: HashMap<ObjectID, VerticesIndicesHash>,
     // objects_to_render: HashMap<(PipelineConfig, VerticesIndicesHash), ObjectsToRender>,
-    uniform_allocation: Option<AllocationInfo>,
+    // uniform_allocation: Option<AllocationInfo>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
     is_minimized: bool,
@@ -90,7 +94,7 @@ struct SwapchainSupportDetails {
 
 // Instance and device management
 impl VkController {
-    const DEVICE_EXTENSIONS: [*const i8; 1] = [Swapchain::name().as_ptr()];
+    const DEVICE_EXTENSIONS: [*const i8; 2] = [Swapchain::name().as_ptr(), ExtDescriptorIndexingFn::name().as_ptr()];
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
     pub const MAX_OBJECT_TYPES:  usize = 1000;
@@ -148,7 +152,7 @@ impl VkController {
 
         let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
 
-        let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
+        // let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
 
         let mut command_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
@@ -186,7 +190,7 @@ impl VkController {
             // object_id_to_vertices_indices_hash: HashMap::new(),
             // object_id_to_pipeline: HashMap::new(),
             // objects_to_render,
-            uniform_allocation: Some(uniform_allocation),
+            // uniform_allocation: Some(uniform_allocation),
             current_frame: 0,
             frame_buffer_resized: false,
             is_minimized: false,
@@ -469,7 +473,7 @@ impl VkController {
 
             self.sampler_manager.destroy_samplers(&self.device, &mut self.allocator);
 
-            self.allocator.free_memory_allocation(self.uniform_allocation.take().unwrap()).unwrap();
+            // self.allocator.free_memory_allocation(self.uniform_allocation.take().unwrap()).unwrap();
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
@@ -952,11 +956,11 @@ impl VkController {
 
 // Resource management
 impl VkController {
-    fn create_uniform_buffers(allocator: &mut VkAllocator) -> AllocationInfo {
-        let buffer_size = std::mem::size_of::<UniformBufferObject>();
+    // fn create_uniform_buffers(allocator: &mut VkAllocator) -> AllocationInfo {
+    //     let buffer_size = std::mem::size_of::<UniformBufferObject>();
 
-        allocator.create_uniform_buffers(buffer_size, Self::MAX_FRAMES_IN_FLIGHT).unwrap()
-    }
+    //     allocator.create_uniform_buffers(buffer_size, Self::MAX_FRAMES_IN_FLIGHT).unwrap()
+    // }
 
     fn create_descriptor_pool(device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorPool {
         let pool_sizes = [
@@ -1111,19 +1115,20 @@ impl VkController {
 
 
 pub trait VkControllerGraphicsObjectsControl<T: Vertex + Clone> {
-    fn add_objects_to_render(&mut self, original_objects: Vec<(Arc<RwLock<dyn GraphicsObject<T>>>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>>;
+    // , Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)
+    fn add_objects_to_render(&mut self, original_objects: Vec<Arc<RwLock<dyn GraphicsObject<T>>>>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>>;
 }
 
 impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkController {
-    fn add_objects_to_render(&mut self, original_objects: Vec<(Arc<RwLock<dyn GraphicsObject<T>>>, Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>> {
+    fn add_objects_to_render(&mut self, original_objects: Vec<Arc<RwLock<dyn GraphicsObject<T>>>>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>> {
         let object_ids = self.object_manager.generate_currently_unused_ids(original_objects.len())?;
         let mut object_id_to_object = Vec::with_capacity(original_objects.len());
         let mut objects_to_render = Vec::with_capacity(original_objects.len());
         let mut i = 0;
-        for (object, resources) in original_objects {
+        for object in original_objects {
             let object_id = object_ids[i];
             let object_to_render = Box::new(object.clone());
-            objects_to_render.push((object_id, object_to_render as Box<dyn Renderable>, resources));
+            objects_to_render.push((object_id, object_to_render as Box<dyn Renderable>));
             object_id_to_object.push((object_id, object.clone()));
             i += 1;
         }

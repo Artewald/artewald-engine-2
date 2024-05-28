@@ -4,7 +4,7 @@ use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, Des
 use image::DynamicImage;
 use nalgebra_glm as glm;
 
-use crate::{pipeline_manager::{ObjectInstanceGraphicsResource, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VerticesIndicesHash, VkController}};
+use crate::{pipeline_manager::{ObjectInstanceGraphicsResource, ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VerticesIndicesHash, VkController}};
 
 #[macro_export]
 macro_rules! free_allocations_add_error_string {
@@ -23,36 +23,14 @@ type ResourceAllocation = (ResourceID, vk::DescriptorSetLayoutBinding, Allocatio
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
 pub struct ResourceID(pub u32);
 
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C, align(16))]
-pub struct UniformBufferObject {
-    pub model: glm::Mat4,
-    pub view: glm::Mat4,
-    pub proj: glm::Mat4,
-}
-
-impl Serializable for UniformBufferObject {
-    fn to_u8(&self) -> Vec<u8> {
-        let model = self.model.as_slice();
-        let view = self.view.as_slice();
-        let proj = self.proj.as_slice();
-        let mut result = Vec::with_capacity(std::mem::size_of::<UniformBufferObject>());
-        for i in 0..16 {
-            result.extend_from_slice(&model[i].to_ne_bytes());
-        }
-        for i in 0..16 {
-            result.extend_from_slice(&view[i].to_ne_bytes());
-        }
-        for i in 0..16 {
-            result.extend_from_slice(&proj[i].to_ne_bytes());
-        }
-
-        result
-    }
+#[derive(Clone)]
+pub struct UniformBufferResource<T: Clone> {
+    pub buffer: T,
+    pub binding: u32,
 }
 
 #[derive(Clone)]
-pub struct UniformBufferResource<T: Clone> {
+pub struct DynamicUniformBufferResource<T: Clone> {
     pub buffer: T,
     pub binding: u32,
 }
@@ -70,6 +48,22 @@ impl<T: Clone + Serializable> ObjectTypeGraphicsResource for UniformBufferResour
 
     fn get_resource(&self) -> crate::pipeline_manager::ObjectTypeGraphicsResourceType {
         ObjectTypeGraphicsResourceType::UniformBuffer(self.buffer.to_u8())
+    }
+}
+
+impl<T:Clone + Serializable> ObjectInstanceGraphicsResource for UniformBufferResource<T> {
+    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
+        vk::DescriptorSetLayoutBinding {
+            binding: self.binding,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: std::ptr::null(),
+        }
+    }
+
+    fn get_resource(&self) -> crate::pipeline_manager::ObjectInstanceGraphicsResourceType {
+        ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(self.buffer.to_u8())
     }
 }
 
@@ -96,35 +90,13 @@ impl ObjectTypeGraphicsResource for TextureResource {
     }
 }
 
-#[derive(Clone)]
-pub struct SimpleObjectTextureResource {
-    pub path: PathBuf,
-    pub binding: u32,
-    pub sampler: Sampler,
-}
-
-impl ObjectTypeGraphicsResource for SimpleObjectTextureResource {
-    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
-        vk::DescriptorSetLayoutBinding {
-            binding: self.binding,
-            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::FRAGMENT,
-            p_immutable_samplers: std::ptr::null(),
-        }
-    }
-
-    fn get_resource(&self) -> ObjectTypeGraphicsResourceType {
-        ObjectTypeGraphicsResourceType::Texture(image::open(self.path.clone()).unwrap())
-    }
-}
-
 pub trait GraphicsObject<T: Vertex> {
     fn get_vertices(&self) -> Vec<T>;
     fn get_indices(&self) -> Vec<u32>;
     fn get_instance_resources(&self) -> Vec<(ResourceID, Arc<RwLock<dyn ObjectInstanceGraphicsResource>>)>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
     fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash;
+    fn get_type_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectTypeGraphicsResource + 'static)>>)>;
 }
 
 pub trait Renderable {
@@ -135,6 +107,7 @@ pub trait Renderable {
     fn get_vertex_binding_info(&self) -> vk::VertexInputBindingDescription;
     fn get_vertex_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
     fn get_shader_infos(&self) -> Vec<ShaderInfo>;
+    fn get_type_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectTypeGraphicsResource + 'static)>>)>;
 }
 
 impl<T: Vertex> Renderable for Arc<RwLock<dyn GraphicsObject<T>>> {
@@ -167,6 +140,10 @@ impl<T: Vertex> Renderable for Arc<RwLock<dyn GraphicsObject<T>>> {
     
     fn get_vertex_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription> {
         T::get_attribute_descriptions()
+    }
+    
+    fn get_type_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectTypeGraphicsResource + 'static)>>)> {
+        self.read().unwrap().get_type_resources()
     }
     
     
