@@ -27,14 +27,14 @@ fn main() {
 
     let (vertices, indices) = load_model("./assets/objects/viking_room.obj");
     
-    let mod1 = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+    let mod1 = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(1.0, 0.0, 0.0));
 
-    let mod2 = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+    let mod2 = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)) * glm::rotate(&glm::identity(), 0f32 * std::f32::consts::PI * 0.25, &glm::vec3(1.0, 0.0, 0.0));
 
     let mut proj = glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0);
     proj[(1, 1)] *= -1.0;
     let view_projection = Arc::new(RwLock::new(UniformBufferResource {
-        buffer: proj * glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
+        buffer: proj * glm::look_at(&glm::vec3(0.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 1.0, 0.0)),
         binding: 1,
     }));
 
@@ -215,8 +215,8 @@ fn main() {
         }
         swapchain_extent = vk_controller.get_swapchain_extent();
         
-        obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
-        obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0));
+        obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
+        obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 0.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
 
         vk_controller.draw_frame();
         frame_count += 1;
