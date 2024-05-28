@@ -7,7 +7,7 @@ use shaderc::{Compiler, ShaderKind};
 use crate::vk_allocator::{Serializable, VkAllocator};
 
 pub enum ObjectInstanceGraphicsResourceType {
-    DynamicUniformBuffer(Vec<u8>),
+    DynamicStorageBuffer(Vec<u8>),
 }
 
 pub enum ObjectTypeGraphicsResourceType {

@@ -8,6 +8,7 @@ layout(location = 2) in vec2 texCoord;
 layout(set = 0, binding = 0) buffer InstanceData {
     mat4 model[];
 } instanceData;
+
 layout(set = 0, binding = 1) uniform ObjectTypeData {
     mat4 view_proj;
 } objectTypeData;

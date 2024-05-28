@@ -85,6 +85,28 @@ impl VkAllocator {
         Ok(allocation_info)
     }
 
+    pub fn create_storage_buffers(&mut self, buffer_size: usize, num_buffers: usize) -> Result<AllocationInfo, Cow<'static, str>> {
+        let total_buffer_size = (buffer_size * num_buffers) as u64;
+
+        // let mut uniform_buffers = Vec::with_capacity(num_buffers);
+        
+        let mut allocation_info = self.create_buffer(total_buffer_size, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, true)?; //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        // println!("Device: {:?}, memory start (inclusive): {}, memory end (exclusive): {}, type: {}", allocation_info.memory, allocation_info.memory_start, allocation_info.memory_end, allocation_info.memory_index);
+        let data_ptr = unsafe {
+            self.device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), total_buffer_size, vk::MemoryMapFlags::empty()).unwrap()
+        };
+        for i in 0..num_buffers {
+            let offset = match (i*buffer_size).try_into() {
+                Ok(offset) => offset,
+                Err(err) => return Err(Cow::from(format!("Failed to create uniform buffers because: {}", err))),
+            };
+            // println!("Total size: {}, single size: {}, offset: {}, num_buffer: {}", total_buffer_size, buffer_size, offset, num_buffers);
+            allocation_info.uniform_pointers.push(unsafe {data_ptr.offset(offset)});
+        }
+
+        Ok(allocation_info)
+    }
+
     pub fn create_buffer(&mut self, size: vk::DeviceSize, usage: vk::BufferUsageFlags, properties: vk::MemoryPropertyFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         let buffer_info = vk::BufferCreateInfo {
             s_type: StructureType::BUFFER_CREATE_INFO,

@@ -969,7 +969,7 @@ impl VkController {
                 descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
             },
             vk::DescriptorPoolSize {
-                ty: vk::DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                ty: vk::DescriptorType::STORAGE_BUFFER,
                 descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
             },
             vk::DescriptorPoolSize {
@@ -1132,7 +1132,7 @@ impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkCo
             object_id_to_object.push((object_id, object.clone()));
             i += 1;
         }
-        self.object_manager.add_objects(objects_to_render, &self.device, &self.instance, &self.physical_device, &self.command_pool, &self.descriptor_pool, &self.graphics_queue, &mut self.sampler_manager, self.msaa_samples, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), self.current_frame, &mut self.allocator)?;
+        self.object_manager.add_objects(objects_to_render, &self.device, &self.instance, &self.physical_device, &self.command_pool, &self.descriptor_pool, &self.graphics_queue, &mut self.sampler_manager, self.msaa_samples, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.swapchain_extent, self.current_frame, &mut self.graphics_pipeline_manager, &mut self.allocator)?;
         Ok(object_id_to_object)
     }
 }

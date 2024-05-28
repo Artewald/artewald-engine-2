@@ -9,15 +9,15 @@
 // - all static textures (if the shader is set up to have multiple textures per object we need to have multiple texture arrays)
 // - all uniform buffer data that is the same for the object type (not dynamic)
 // - all "uniform buffer" data (if the shader is set up to have multiple uniform buffers per object we need to have multiple shader storage buffers)
-//     - This is the per instance object data (UNIFORM_BUFFER_DYNAMIC)
+//     - This is the per instance object data (STORAGE_BUFFER)
 
 use std::{borrow::Cow, collections::{hash_map::Entry, HashMap, HashSet}, hash::{DefaultHasher, Hash, Hasher}, sync::{Arc, RwLock}};
 
-use ash::{vk::{self, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
+use ash::{vk::{self, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, Extent2D, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
 use image::DynamicImage;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
-use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig}, sampler_manager::{SamplerConfig, SamplerManager}, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, ReferenceObjectID, VerticesIndicesHash, VkController}};
+use crate::{free_allocations_add_error_string, graphics_objects::{Renderable, ResourceID}, pipeline_manager::{self, ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager}, sampler_manager::{SamplerConfig, SamplerManager}, vk_allocator::{AllocationInfo, VkAllocator}, vk_controller::{ObjectID, ReferenceObjectID, VerticesIndicesHash, VkController}};
 
 enum DataToRemove {
     Allocation(AllocationInfo),
@@ -68,7 +68,7 @@ impl ObjectManager {
         }
     }
 
-    pub fn add_objects(&mut self, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    pub fn add_objects(&mut self, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, msaa_samples: vk::SampleCountFlags, swapchain_format: vk::Format, depth_format: vk::Format, swapchain_extent: &Extent2D, current_frame: usize, pipeline_manager: &mut PipelineManager, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let all_object_types_including_new_ones = self.get_object_types();
         objects_to_add.iter().for_each(|(_, object)| {
             let object_type = ObjectType(object.get_vertices_and_indices_hash());
@@ -127,7 +127,7 @@ impl ObjectManager {
                 descriptor_set_layout_bindings.push(layout_binding);
             }
 
-            let pipeline_config = PipelineConfig::new(
+            let mut pipeline_config = PipelineConfig::new(
                 device,
                 object.get_shader_infos(),
                 object.get_vertex_binding_info(),
@@ -138,6 +138,8 @@ impl ObjectManager {
                 depth_format,
                 allocator
             ).expect(format!("Failed to create pipeline config for object with type {:?}", object_type).as_str());
+            
+            let _ = pipeline_manager.get_or_create_pipeline(&mut pipeline_config, device, swapchain_extent, allocator);
 
             object_type_to_pipeline.insert(object_type, pipeline_config);
         }
@@ -246,15 +248,14 @@ pub struct DataUsedInShader {
     pub object_type_num_instances: HashMap<ObjectType, (NumInstances, NumIndices)>,
     pub object_type_vertices_bytes_indices: HashMap<ObjectType, (Inclusive, Exclusive)>,
     pub object_type_indices_bytes_indices: HashMap<ObjectType, (Inclusive, Exclusive)>,
-    // TODO: object_type_textures_dynamic_bytes_indices: HashMap<ObjectID, (Inclusive, Exclusive)>,
-    object_id_uniform_buffer_dynamic_bytes_indices: HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>,
+    object_id_storage_buffer_bytes_indices: HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>,
     pub vertices: (AllocationInfo, Vec<u8>),
     pub indices: (AllocationInfo, Vec<u8>),
     textures: HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>,
     pub object_type_references: HashMap<ObjectType, ReferenceObjectID>,
     // TODO: textures_dynamic: Vec<u32>,
     uniform_buffers: HashMap<(ObjectType, ResourceID), AllocationInfo>,
-    dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>,
+    storage_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>,
     descriptor_type_data: Vec<(ResourceID, DescriptorType, DescriptorSetLayoutBinding)>,
     pub descriptor_sets: HashMap<ObjectType, Vec<DescriptorSet>>,
     allocations_and_descriptor_sets_to_remove: (LastFrameIndex, Vec<(Counter, DataToRemove)>),
@@ -265,8 +266,8 @@ impl DataUsedInShader {
     fn new(pipeline_config: &PipelineConfig, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<Self, Cow<'static, str>> {
         let mut textures = HashMap::new();
         let mut uniform_buffers = HashMap::new();
-        let mut dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)> = HashMap::new();
-        let mut object_id_uniform_buffer_dynamic_bytes_indices = HashMap::new();
+        let mut storage_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)> = HashMap::new();
+        let mut object_id_storage_buffer_bytes_indices = HashMap::new();
         let mut object_type_vertices_bytes_indices = HashMap::new();
         let mut object_type_indices_bytes_indices = HashMap::new();
         let mut descriptor_type_data = Vec::new();
@@ -294,14 +295,14 @@ impl DataUsedInShader {
             for (resource_id, resource) in object.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        match Self::create_dynamic_uniform_buffer(*object_type, resource_id, num_instances.0, buffer.clone(), &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
+                    ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(buffer) => {
+                        match Self::create_storage_buffer(*object_type, resource_id, num_instances.0, buffer.clone(), &mut textures, &mut uniform_buffers, &mut storage_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
     
                         if !descriptor_type_data.iter().any(|x| x.0 == resource_id) {
-                            descriptor_type_data.push((resource_id, DescriptorType::UNIFORM_BUFFER_DYNAMIC, resource_lock.get_descriptor_set_layout_binding()));
+                            descriptor_type_data.push((resource_id, DescriptorType::STORAGE_BUFFER, resource_lock.get_descriptor_set_layout_binding()));
                         }
 
                         Self::add_object_vertices_and_indices_if_new_object_type(*object_type, object, &object_type_references, &mut object_type_vertices_bytes_indices, &mut object_type_indices_bytes_indices, &mut vertices_data, &mut indices_data).unwrap();
@@ -318,13 +319,13 @@ impl DataUsedInShader {
                 for (resource_id, resource) in object.1.get_type_resources() {
                     match resource.read().unwrap().get_resource() {
                         ObjectTypeGraphicsResourceType::Texture(image) => {
-                            match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, sampler_manager, allocator) {
+                            match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, &mut textures, &mut uniform_buffers, &mut storage_uniform_buffers, sampler_manager, allocator) {
                                 Ok(_) => (),
                                 Err(e) => return Err(e),
                             }
                         },
                     ObjectTypeGraphicsResourceType::UniformBuffer(buffer) => {
-                        match Self::create_and_add_static_uniform_buffer(object_type, resource_id, &buffer, current_frame, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
+                        match Self::create_and_add_static_uniform_buffer(object_type, resource_id, &buffer, current_frame, &mut textures, &mut uniform_buffers, &mut storage_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
@@ -337,9 +338,9 @@ impl DataUsedInShader {
         }
         
         let all_objects = objects.iter().map(|(id, obj)| (id, obj)).collect::<Vec<_>>(); 
-        Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut object_id_uniform_buffer_dynamic_bytes_indices);
+        Self::create_storage_buffer_byte_indices(&all_objects, &mut object_id_storage_buffer_bytes_indices);
         
-        Self::copy_dynamic_buffer_data_to_gpu(&objects, &mut dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
+        Self::copy_storage_buffer_data_to_gpu(&objects, &mut storage_uniform_buffers, &object_id_storage_buffer_bytes_indices, current_frame as usize);
 
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
@@ -354,20 +355,20 @@ impl DataUsedInShader {
             },
         };
 
-        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, &uniform_buffers, &textures, &dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, &uniform_buffers, &textures, &storage_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
         Ok(Self {
             objects,
             object_type_num_instances,
             object_type_vertices_bytes_indices,
             object_type_indices_bytes_indices,
-            object_id_uniform_buffer_dynamic_bytes_indices,
+            object_id_storage_buffer_bytes_indices,
             vertices: (vertex_allocation, vertices_data),
             indices: (index_allocation, indices_data),
             textures,
             object_type_references,
             uniform_buffers,
-            dynamic_uniform_buffers,
+            storage_buffers: storage_uniform_buffers,
             descriptor_type_data,
             descriptor_sets,
             allocations_and_descriptor_sets_to_remove: (LastFrameIndex(current_frame as usize), Vec::new()),
@@ -377,8 +378,8 @@ impl DataUsedInShader {
     fn add_objects(&mut self, pipeline_config: &PipelineConfig, objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, descriptor_pool: &DescriptorPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let mut textures = HashMap::new();
         let mut uniform_buffers = HashMap::new();
-        let mut dynamic_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)> = HashMap::new();
-        let mut object_id_uniform_buffer_dynamic_bytes_indices = HashMap::new();
+        let mut storage_uniform_buffers: HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)> = HashMap::new();
+        let mut object_id_storage_buffer_bytes_indices = HashMap::new();
         let mut object_type_vertices_bytes_indices = self.object_type_vertices_bytes_indices.clone();
         let mut object_type_indices_bytes_indices = self.object_type_indices_bytes_indices.clone();
         let mut object_type_references_from_self = self.object_type_references.clone();
@@ -398,8 +399,8 @@ impl DataUsedInShader {
             for (resource_id, resource) in objects_to_add.iter().find(|obj| obj.1.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        match Self::create_dynamic_uniform_buffer(*object_type, resource_id, *num_instances, buffer.clone(), &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
+                    ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(buffer) => {
+                        match Self::create_storage_buffer(*object_type, resource_id, *num_instances, buffer.clone(), &mut textures, &mut uniform_buffers, &mut storage_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
@@ -428,13 +429,13 @@ impl DataUsedInShader {
                 for (resource_id, resource) in object.1.get_type_resources() {
                     match resource.read().unwrap().get_resource() {
                         ObjectTypeGraphicsResourceType::Texture(image) => {
-                            match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, sampler_manager, allocator) {
+                            match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, &mut textures, &mut uniform_buffers, &mut storage_uniform_buffers, sampler_manager, allocator) {
                                 Ok(_) => (),
                                 Err(e) => return Err(e),
                             }
                         },
                     ObjectTypeGraphicsResourceType::UniformBuffer(buffer) => {
-                        match Self::create_and_add_static_uniform_buffer(object_type, resource_id, &buffer, current_frame, &mut textures, &mut uniform_buffers, &mut dynamic_uniform_buffers, allocator) {
+                        match Self::create_and_add_static_uniform_buffer(object_type, resource_id, &buffer, current_frame, &mut textures, &mut uniform_buffers, &mut storage_uniform_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
@@ -449,10 +450,10 @@ impl DataUsedInShader {
         let mut all_objects = self.objects.iter().map(|(k, v)| (k, v)).collect::<Vec<_>>();
         all_objects.extend(new_objects.iter().map(|(k, v)| (k, v)));
 
-        Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut object_id_uniform_buffer_dynamic_bytes_indices);
+        Self::create_storage_buffer_byte_indices(&all_objects, &mut object_id_storage_buffer_bytes_indices);
         
-        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &mut dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
-        Self::copy_dynamic_buffer_data_to_gpu(&mut new_objects, &mut dynamic_uniform_buffers, &object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
+        Self::copy_storage_buffer_data_to_gpu(&self.objects, &mut storage_uniform_buffers, &object_id_storage_buffer_bytes_indices, current_frame as usize);
+        Self::copy_storage_buffer_data_to_gpu(&mut new_objects, &mut storage_uniform_buffers, &object_id_storage_buffer_bytes_indices, current_frame as usize);
 
         let vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &vertices_data, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
@@ -467,7 +468,7 @@ impl DataUsedInShader {
             },
         };
 
-        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, &uniform_buffers, &textures, &dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &descriptor_type_data, &uniform_buffers, &textures, &storage_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
         let texture_keys = textures.keys().cloned().collect::<Vec<_>>();
         self.textures.iter_mut().filter(|(k, _)| texture_keys.contains(k)).for_each(|(k, v)| {
@@ -483,12 +484,12 @@ impl DataUsedInShader {
         });
         self.uniform_buffers.extend(uniform_buffers);
         
-        let dynamic_uniform_keys = dynamic_uniform_buffers.keys().cloned().collect::<Vec<_>>();
-        self.dynamic_uniform_buffers.iter_mut().filter(|(k, _)| dynamic_uniform_keys.contains(k)).for_each(|(k, v)| {
-            std::mem::swap(v, dynamic_uniform_buffers.get_mut(k).unwrap());
-            self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(dynamic_uniform_buffers.remove(k).unwrap().0)));
+        let storage_keys = storage_uniform_buffers.keys().cloned().collect::<Vec<_>>();
+        self.storage_buffers.iter_mut().filter(|(k, _)| storage_keys.contains(k)).for_each(|(k, v)| {
+            std::mem::swap(v, storage_uniform_buffers.get_mut(k).unwrap());
+            self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(storage_uniform_buffers.remove(k).unwrap().0)));
         });
-        self.dynamic_uniform_buffers.extend(dynamic_uniform_buffers);
+        self.storage_buffers.extend(storage_uniform_buffers);
 
         Ok(())
     }
@@ -566,9 +567,9 @@ impl DataUsedInShader {
                 self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(allocation)));
             });
 
-            let dynamic_uniform_keys = self.dynamic_uniform_buffers.keys().cloned().filter(|k| k.0 == *object_type).collect::<Vec<_>>();
-            dynamic_uniform_keys.iter().filter(|k| k.0 == *object_type).for_each(|k| {
-                let (allocation, _) = self.dynamic_uniform_buffers.remove(&k).unwrap();
+            let storage_keys = self.storage_buffers.keys().cloned().filter(|k| k.0 == *object_type).collect::<Vec<_>>();
+            storage_keys.iter().filter(|k| k.0 == *object_type).for_each(|k| {
+                let (allocation, _) = self.storage_buffers.remove(&k).unwrap();
                 self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(allocation)));
             });
 
@@ -576,13 +577,13 @@ impl DataUsedInShader {
             self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::DescriptorSets(descriptor_sets)));
         });
 
-        let mut new_dynamic_uniform_buffers = HashMap::new();
+        let mut new_storage_buffers = HashMap::new();
         for (object_type, (num_instances, _)) in self.object_type_num_instances.iter() {
             for (resource_id, resource) in self.objects.iter().find(|(_, obj)| obj.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        match Self::create_dynamic_uniform_buffer(*object_type, resource_id, *num_instances, buffer.clone(), &mut HashMap::new(), &mut HashMap::new(), &mut new_dynamic_uniform_buffers, allocator) {
+                    ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(buffer) => {
+                        match Self::create_storage_buffer(*object_type, resource_id, *num_instances, buffer.clone(), &mut HashMap::new(), &mut HashMap::new(), &mut new_storage_buffers, allocator) {
                             Ok(_) => (),
                             Err(e) => return Err(e),
                         }
@@ -591,17 +592,17 @@ impl DataUsedInShader {
             }
         }
 
-        let new_dynamic_uniform_keys = new_dynamic_uniform_buffers.keys().cloned().collect::<Vec<_>>();
-        self.dynamic_uniform_buffers.iter_mut().filter(|(k, _)| new_dynamic_uniform_keys.contains(k)).for_each(|(k, v)| {
-            std::mem::swap(v, new_dynamic_uniform_buffers.get_mut(k).unwrap());
-            self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(new_dynamic_uniform_buffers.remove(k).unwrap().0)));
+        let new_storage_keys = new_storage_buffers.keys().cloned().collect::<Vec<_>>();
+        self.storage_buffers.iter_mut().filter(|(k, _)| new_storage_keys.contains(k)).for_each(|(k, v)| {
+            std::mem::swap(v, new_storage_buffers.get_mut(k).unwrap());
+            self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(new_storage_buffers.remove(k).unwrap().0)));
         });
 
         let all_objects = self.objects.iter().map(|(k, v)| (k, v)).collect::<Vec<_>>();
         
-        Self::create_dynamic_uniform_buffer_byte_indices(&all_objects, &mut self.object_id_uniform_buffer_dynamic_bytes_indices);
+        Self::create_storage_buffer_byte_indices(&all_objects, &mut self.object_id_storage_buffer_bytes_indices);
         
-        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &mut self.dynamic_uniform_buffers, &self.object_id_uniform_buffer_dynamic_bytes_indices, current_frame as usize);
+        Self::copy_storage_buffer_data_to_gpu(&self.objects, &mut self.storage_buffers, &self.object_id_storage_buffer_bytes_indices, current_frame as usize);
 
         let mut vertex_allocation = match allocator.create_device_local_buffer(command_pool, graphics_queue, &self.vertices.1, vk::BufferUsageFlags::VERTEX_BUFFER, false) {
             Ok(alloc) => alloc,
@@ -621,13 +622,13 @@ impl DataUsedInShader {
         self.allocations_and_descriptor_sets_to_remove.1.push((Counter(0), DataToRemove::Allocation(index_allocation)));
 
         let object_types = self.objects.iter().map(|(_, v)| ObjectType(v.get_vertices_and_indices_hash())).collect::<HashSet<_>>();
-        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &self.descriptor_type_data, &self.uniform_buffers, &self.textures, &self.dynamic_uniform_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
+        let descriptor_sets = Self::create_descriptor_sets(device, descriptor_pool, pipeline_config.borrow_descriptor_set_layout().unwrap(), &object_types, &self.descriptor_type_data, &self.uniform_buffers, &self.textures, &self.storage_buffers, VkController::MAX_FRAMES_IN_FLIGHT as u32, allocator);
 
         Ok(())
     }
 
     fn update_all_uniform_data(&mut self, current_frame: usize) {
-        Self::copy_dynamic_buffer_data_to_gpu(&self.objects, &mut self.dynamic_uniform_buffers, &self.object_id_uniform_buffer_dynamic_bytes_indices, current_frame);
+        Self::copy_storage_buffer_data_to_gpu(&self.objects, &mut self.storage_buffers, &self.object_id_storage_buffer_bytes_indices, current_frame);
         self.object_type_references.iter().for_each(|(object_type, reference)| {
             let object = self.objects.get(&reference.0).expect("Reference object not found in object manager. This should never happen!");
             for (resource_id, resource) in object.get_type_resources() {
@@ -658,7 +659,7 @@ impl DataUsedInShader {
         for (_, allocation) in self.uniform_buffers {
             free_allocations_add_error_string!(allocator, vec![allocation], error_str);
         }
-        for (_, (allocation, _)) in self.dynamic_uniform_buffers {
+        for (_, (allocation, _)) in self.storage_buffers {
             free_allocations_add_error_string!(allocator, vec![allocation], error_str);
         }
         for (_, descriptor_sets) in self.descriptor_sets {
@@ -682,7 +683,7 @@ impl DataUsedInShader {
         
     }
 
-    fn create_descriptor_sets(device: &Device, descriptor_pool: &DescriptorPool, descriptor_set_layout: &DescriptorSetLayout, object_types: &HashSet<ObjectType>, descriptor_type_data: &[(ResourceID, DescriptorType, DescriptorSetLayoutBinding)], uniform_buffers: &HashMap<(ObjectType, ResourceID), AllocationInfo>, textures: &HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, dynamic_uniform_buffers: &HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, frames_in_flight: u32, allocator: &mut VkAllocator) -> HashMap<ObjectType, Vec<DescriptorSet>> {
+    fn create_descriptor_sets(device: &Device, descriptor_pool: &DescriptorPool, descriptor_set_layout: &DescriptorSetLayout, object_types: &HashSet<ObjectType>, descriptor_type_data: &[(ResourceID, DescriptorType, DescriptorSetLayoutBinding)], uniform_buffers: &HashMap<(ObjectType, ResourceID), AllocationInfo>, textures: &HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, storage_buffers: &HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, frames_in_flight: u32, allocator: &mut VkAllocator) -> HashMap<ObjectType, Vec<DescriptorSet>> {
         let mut descriptor_sets = HashMap::new();
 
         for object_type in object_types {
@@ -736,8 +737,8 @@ impl DataUsedInShader {
                                 ..Default::default()
                             }
                         },
-                        DescriptorType::UNIFORM_BUFFER_DYNAMIC => {
-                            let (allocation_info, _) = dynamic_uniform_buffers.get(&(*object_type, *resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the dynamic uniform buffer added to the object type?");
+                        DescriptorType::STORAGE_BUFFER => {
+                            let (allocation_info, _) = storage_buffers.get(&(*object_type, *resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the storage buffer added to the object type?");
                             let offset = unsafe {allocation_info.get_uniform_pointers()[i as usize].offset_from(allocation_info.get_uniform_pointers()[0])} as u64;
                             let size = (allocation_info.get_memory_end()-allocation_info.get_memory_start())/allocation_info.get_uniform_pointers().len().max(1) as u64;
                             let buffer = allocation_info.get_buffer().unwrap();
@@ -754,7 +755,7 @@ impl DataUsedInShader {
                                 dst_set: descriptor_sets_local[i as usize],
                                 dst_binding: layout_binding.binding,
                                 dst_array_element: 0,
-                                descriptor_type: DescriptorType::UNIFORM_BUFFER_DYNAMIC,
+                                descriptor_type: DescriptorType::STORAGE_BUFFER,
                                 descriptor_count: 1,
                                 p_buffer_info: buffer_info,
                                 p_image_info: std::ptr::null(),
@@ -818,19 +819,19 @@ impl DataUsedInShader {
         (object_type_data, object_type_num_instances)
     }
 
-    fn create_dynamic_uniform_buffer(object_type: ObjectType, resource_id: ResourceID, num_instances: NumInstances, buffer: Vec<u8>, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_dynamic_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
-        let allocation = match allocator.create_uniform_buffers(num_instances.0 as usize * buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
+    fn create_storage_buffer(object_type: ObjectType, resource_id: ResourceID, num_instances: NumInstances, buffer: Vec<u8>, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+        let allocation = match allocator.create_storage_buffers(num_instances.0 as usize * buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
             Ok(alloc) => alloc,
             Err(e) => {
                 let mut error_str = e.to_string();
                 let mut allocations = Vec::new();
-                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_dynamic_uniform_buffers, &mut allocations, allocator);
+                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_storage_buffers, &mut allocations, allocator);
                 free_allocations_add_error_string!(allocator, allocations, error_str);
                 return Err(Cow::from(error_str));
             },
         };
 
-        new_dynamic_uniform_buffers.insert((object_type, resource_id), (allocation, Vec::new()));
+        new_storage_buffers.insert((object_type, resource_id), (allocation, vec![0; num_instances.0 as usize * buffer.len()]));
         Ok(())
     }
 
@@ -847,13 +848,13 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn create_and_add_static_texture(object_type: ObjectType, resource_id: ResourceID, image: DynamicImage, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, graphics_queue: &Queue, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_dynamic_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    fn create_and_add_static_texture(object_type: ObjectType, resource_id: ResourceID, image: DynamicImage, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, graphics_queue: &Queue, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let mut allocation = match allocator.create_device_local_image(image, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false) {
             Ok(alloc) => alloc,
             Err(e) => {
                 let mut error_str = e.to_string();
                 let mut allocations = Vec::new();
-                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_dynamic_uniform_buffers, &mut allocations, allocator);
+                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_storage_buffers, &mut allocations, allocator);
                 free_allocations_add_error_string!(allocator, allocations, error_str);
                 return Err(Cow::from(error_str));
             },
@@ -866,7 +867,7 @@ impl DataUsedInShader {
                 let mut error_str = e.to_string();
                 let mut allocations = Vec::new();
                 allocations.push(allocation);
-                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_dynamic_uniform_buffers, &mut allocations, allocator);
+                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_storage_buffers, &mut allocations, allocator);
                 free_allocations_add_error_string!(allocator, allocations, error_str);
                 return Err(Cow::from(error_str));
             },
@@ -894,13 +895,13 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn create_and_add_static_uniform_buffer(object_type: ObjectType, resource_id: ResourceID, buffer: &[u8], current_frame: usize, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_dynamic_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    fn create_and_add_static_uniform_buffer(object_type: ObjectType, resource_id: ResourceID, buffer: &[u8], current_frame: usize, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let allocation = match allocator.create_uniform_buffers(buffer.len(), VkController::MAX_FRAMES_IN_FLIGHT) {
             Ok(alloc) => alloc,
             Err(e) => {
                 let mut error_str = e.to_string();
                 let mut allocations = Vec::new();
-                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_dynamic_uniform_buffers, &mut allocations, allocator);
+                Self::add_hashmap_allocations_to_free(new_textures, new_uniform_buffers, new_storage_buffers, &mut allocations, allocator);
                 free_allocations_add_error_string!(allocator, allocations, error_str);
                 return Err(Cow::from(error_str));
             },
@@ -914,16 +915,16 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn create_dynamic_uniform_buffer_byte_indices(objects_to_add: &[(&ObjectID, &Box<dyn Renderable>)], object_id_uniform_buffer_dynamic_bytes_indices: &mut HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>) {
-        let mut number_of_allocated_dynamic_uniform_buffers_per_object_and_resource_id = HashMap::new();
+    fn create_storage_buffer_byte_indices(objects_to_add: &[(&ObjectID, &Box<dyn Renderable>)], object_id_storage_buffer_bytes_indices: &mut HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>) {
+        let mut number_of_allocated_storage_buffers_per_object_and_resource_id = HashMap::new();
         objects_to_add.iter().for_each(|(object_id, object)| {
             let object_type = ObjectType(object.get_vertices_and_indices_hash());
             object.get_object_instance_resources().iter().for_each(|(resource_id, resource)| {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        let current_resource_allocation_number = number_of_allocated_dynamic_uniform_buffers_per_object_and_resource_id.entry((object_type, *resource_id)).or_insert(0);
-                        object_id_uniform_buffer_dynamic_bytes_indices.insert((**object_id, *resource_id), (Inclusive(*current_resource_allocation_number as usize *buffer.len()), Exclusive(((*current_resource_allocation_number + 1) as usize * buffer.len()) - 1)));
+                    ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(buffer) => {
+                        let current_resource_allocation_number = number_of_allocated_storage_buffers_per_object_and_resource_id.entry((object_type, *resource_id)).or_insert(0);
+                        object_id_storage_buffer_bytes_indices.insert((**object_id, *resource_id), (Inclusive(*current_resource_allocation_number as usize *buffer.len()), Exclusive(((*current_resource_allocation_number + 1) as usize * buffer.len()) - 1)));
                         *current_resource_allocation_number += 1;
                     }
                 }
@@ -931,39 +932,40 @@ impl DataUsedInShader {
         });
     }
 
-    fn copy_dynamic_buffer_data_to_gpu(objects: &HashMap<ObjectID, Box<dyn Renderable>>, dynamic_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_id_uniform_buffer_dynamic_bytes_indices: &HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>, current_frame: usize) {
+    fn copy_storage_buffer_data_to_gpu(objects: &HashMap<ObjectID, Box<dyn Renderable>>, storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_id_storage_buffer_bytes_indices: &HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>, current_frame: usize) {
         objects.iter().for_each(|(object_id, object)| {
             let object_type = ObjectType(object.get_vertices_and_indices_hash());
             for (resource_id, resource) in object.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
-                    ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(buffer) => {
-                        let (allocation_info, alloc_buffer) = dynamic_uniform_buffers.get_mut(&(object_type, resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the dynamic uniform buffer added to the object type?");
-                        let (start, end) = object_id_uniform_buffer_dynamic_bytes_indices.get(&(*object_id, resource_id)).expect("Dynamic uniform buffer bytes indices not found for object id. This should never happen. Was the dynamic uniform buffer added to the object id?");
+                    ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(buffer) => {
+                        let (allocation_info, alloc_buffer) = storage_buffers.get_mut(&(object_type, resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the storage buffer added to the object type?");
+                        let (start, end) = object_id_storage_buffer_bytes_indices.get(&(*object_id, resource_id)).expect("Dynamic uniform buffer bytes indices not found for object id. This should never happen. Was the storage buffer added to the object id?");
                         if buffer.len() != (end.0 - start.0 + 1) as usize {
-                            eprintln!("The dynamic uniform buffer size does not match the size of the buffer that was allocated for it. This should never happen.");
+                            eprintln!("The storage buffer size does not match the size of the buffer that was allocated for it. This should never happen.");
                         }
-                        alloc_buffer[(start.0 as usize)..(end.0 as usize)].copy_from_slice(&buffer[(start.0 as usize)..(end.0 as usize + 1)]);
+                        // dbg!(alloc_buffer.len(), start.0, end.0, buffer.len());
+                        alloc_buffer[(start.0 as usize)..(end.0 as usize + 1)].copy_from_slice(&buffer[0..((end.0 - start.0 + 1))]);
                     },
                 }
             }
         });
 
-        dynamic_uniform_buffers.iter().for_each(|(_, (allocation_info, buffer))| {
+        storage_buffers.iter().for_each(|(_, (allocation_info, buffer))| {
             unsafe {
                 std::ptr::copy_nonoverlapping(buffer.as_ptr() as *const std::ffi::c_void, allocation_info.get_uniform_pointers()[current_frame], buffer.len());
             }
         });
     }
 
-    fn add_hashmap_allocations_to_free(textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, dynamic_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, allocations: &mut Vec<AllocationInfo>, allocator: &mut VkAllocator) {
+    fn add_hashmap_allocations_to_free(textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, allocations: &mut Vec<AllocationInfo>, allocator: &mut VkAllocator) {
         for (_, (allocation, _)) in textures.drain() {
             allocations.push(allocation);
         }
         for (_, allocation) in uniform_buffers.drain() {
             allocations.push(allocation);
         }
-        for (_, (allocation, _)) in dynamic_uniform_buffers.drain() {
+        for (_, (allocation, _)) in storage_buffers.drain() {
             allocations.push(allocation);
         }
     }
@@ -997,8 +999,10 @@ impl DataUsedInShader {
             }
         });
 
-        unsafe {
-            device.free_descriptor_sets(*descriptor_pool, &descriptor_sets_to_remove).expect("Failed to free descriptor sets. Which should never happen!");
+        if !descriptor_sets_to_remove.is_empty() {
+            unsafe {
+                device.free_descriptor_sets(*descriptor_pool, &descriptor_sets_to_remove).expect("Failed to free descriptor sets. Which should never happen!");
+            }
         }
 
         self.allocations_and_descriptor_sets_to_remove.1.retain(|(counter, _)| counter.0 < VkController::MAX_FRAMES_IN_FLIGHT);

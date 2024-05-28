@@ -30,7 +30,7 @@ pub struct UniformBufferResource<T: Clone> {
 }
 
 #[derive(Clone)]
-pub struct DynamicUniformBufferResource<T: Clone> {
+pub struct StorageBufferResource<T: Clone> {
     pub buffer: T,
     pub binding: u32,
 }
@@ -55,7 +55,7 @@ impl<T:Clone + Serializable> ObjectInstanceGraphicsResource for UniformBufferRes
     fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
         vk::DescriptorSetLayoutBinding {
             binding: self.binding,
-            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: 1,
             stage_flags: vk::ShaderStageFlags::VERTEX,
             p_immutable_samplers: std::ptr::null(),
@@ -63,7 +63,7 @@ impl<T:Clone + Serializable> ObjectInstanceGraphicsResource for UniformBufferRes
     }
 
     fn get_resource(&self) -> crate::pipeline_manager::ObjectInstanceGraphicsResourceType {
-        ObjectInstanceGraphicsResourceType::DynamicUniformBuffer(self.buffer.to_u8())
+        ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(self.buffer.to_u8())
     }
 }
 
