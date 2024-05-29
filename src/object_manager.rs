@@ -242,7 +242,7 @@ impl ObjectManager {
 }
 
 pub struct DataUsedInShader {
-    objects: HashMap<ObjectID, Box<dyn Renderable>>,
+    objects: HashMap<ObjectID, (ObjectType, Box<dyn Renderable>)>,
     pub object_type_num_instances: HashMap<ObjectType, (NumInstances, NumIndices)>,
     pub object_type_vertices_bytes_indices: HashMap<ObjectType, (Inclusive, Exclusive)>,
     pub object_type_indices_bytes_indices: HashMap<ObjectType, (Inclusive, Exclusive)>,
@@ -357,7 +357,7 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn insert_new_objects (objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, storage_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_types: &mut HashSet<ObjectType>, objects: &mut HashMap<ObjectID, Box<dyn Renderable>>, object_type_vertices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, object_type_indices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, vertices_data: &mut Vec<u8>, indices_data: &mut Vec<u8>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    fn insert_new_objects (objects_to_add: Vec<(ObjectID, Box<dyn Renderable>)>, textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, storage_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_types: &mut HashSet<ObjectType>, objects: &mut HashMap<ObjectID, (ObjectType, Box<dyn Renderable>)>, object_type_vertices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, object_type_indices_bytes_indices: &mut HashMap<ObjectType, (Inclusive, Exclusive)>, vertices_data: &mut Vec<u8>, indices_data: &mut Vec<u8>, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, graphics_queue: &Queue, sampler_manager: &mut SamplerManager, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         for object in objects_to_add {
             let object_type = ObjectType(object.1.get_vertices_and_indices_hash());
             let newly_added_object_type = object_types.insert(object_type);
@@ -381,7 +381,7 @@ impl DataUsedInShader {
                 }
             }
             
-            objects.insert(object.0, object.1);
+            objects.insert(object.0, (object_type, object.1));
         }
         Ok(())
     }
@@ -396,7 +396,7 @@ impl DataUsedInShader {
         let descriptor_type_data = self.descriptor_type_data.clone();
         let mut object_types = HashSet::new();
         let mut new_object_types = HashSet::new();
-        let mut new_objects = HashMap::new();
+        let mut new_objects: HashMap<ObjectID, (ObjectType, Box<dyn Renderable>)> = HashMap::new();
         let mut vertices_data = self.vertices.1.clone();
         let mut indices_data = self.indices.1.clone();
 
@@ -420,7 +420,7 @@ impl DataUsedInShader {
             }
 
             let reference_object = match self.object_type_references.get(&object_type) {
-                Some(reference_id) => self.objects.get(&reference_id.0).unwrap(),
+                Some(reference_id) => &self.objects.get(&reference_id.0).unwrap().1,
                 None => {
                     &objects_to_add.iter().find(|obj| obj.1.get_vertices_and_indices_hash() == object_type.0).unwrap().1
                 },
@@ -454,11 +454,11 @@ impl DataUsedInShader {
                 new_object_types.insert(object_type);
             }
             
-            new_objects.insert(object.0, object.1);
+            new_objects.insert(object.0, (object_type, object.1));
         }
         
         let mut all_objects = self.objects.iter().map(|(k, v)| (k, v)).collect::<Vec<_>>();
-        all_objects.extend(new_objects.iter().map(|(k, v)| (k, v)));
+        all_objects.extend(new_objects.iter().map(|(k, v)| (k, (v))));
 
         Self::create_storage_buffer_byte_indices(&all_objects, &mut object_id_storage_buffer_bytes_indices);
         
@@ -515,7 +515,7 @@ impl DataUsedInShader {
     }
 
     fn remove_objects(&mut self, object_ids_to_remove: Vec<ObjectID>, command_pool: &vk::CommandPool, graphics_queue: &Queue, current_frame: usize, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
-        let mut objects_to_remove: Vec<(ObjectID, Box<dyn Renderable>)> = Vec::new();
+        let mut objects_to_remove: Vec<(ObjectID, (ObjectType, Box<dyn Renderable>))> = Vec::new();
         object_ids_to_remove.iter().for_each(|id| {
             if !self.objects.contains_key(id) {
                 eprintln!("Object with id {:?} not found in object manager. So we are skipping it.", id);
@@ -529,9 +529,8 @@ impl DataUsedInShader {
         }
 
         let mut num_object_types_to_remove: HashMap<ObjectType, NumInstances> = HashMap::new();
-        objects_to_remove.iter().for_each(|(_, object)| {
-            let object_type = ObjectType(object.get_vertices_and_indices_hash());
-            let e = num_object_types_to_remove.entry(object_type).or_insert(NumInstances(0));
+        objects_to_remove.iter().for_each(|(_, (object_type, object))| {
+            let e = num_object_types_to_remove.entry(*object_type).or_insert(NumInstances(0));
             e.0 += 1;
         });
 
@@ -549,7 +548,7 @@ impl DataUsedInShader {
         self.object_type_references.retain(|k, _| !object_types_to_remove.contains(k));
         self.object_type_references.iter_mut().for_each(|(obj_type, reference)| {
             if object_ids_to_remove.contains(&reference.0) {
-                let new_reference = self.objects.iter().find(|(id, obj)| *id != &reference.0 && &ObjectType(obj.get_vertices_and_indices_hash()) == obj_type).map(|(id, _)| ReferenceObjectID(*id)).expect(format!("Failed to find a new reference object for object type {:?}. This should never happen!", obj_type).as_str());
+                let new_reference = self.objects.iter().find(|(id, (object_type, obj))| *id != &reference.0 && object_type == obj_type).map(|(id, _)| ReferenceObjectID(*id)).expect(format!("Failed to find a new reference object for object type {:?}. This should never happen!", obj_type).as_str());
                 *reference = new_reference;
             }
         });
@@ -599,7 +598,7 @@ impl DataUsedInShader {
 
         let mut new_storage_buffers = HashMap::new();
         for (object_type, (num_instances, _)) in self.object_type_num_instances.iter() {
-            for (resource_id, resource) in self.objects.iter().find(|(_, obj)| obj.get_vertices_and_indices_hash() == object_type.0).unwrap().1.get_object_instance_resources() {
+            for (resource_id, resource) in self.objects.iter().find(|(_, (obj_type, obj))| obj_type == object_type).unwrap().1.1.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
                     ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(buffer) => {
@@ -647,7 +646,7 @@ impl DataUsedInShader {
     fn update_all_uniform_data(&mut self, current_frame: usize) {
         Self::copy_storage_buffer_data_to_gpu(&self.objects, &mut self.storage_buffers, &self.object_id_storage_buffer_bytes_indices, current_frame);
         self.object_type_references.iter().for_each(|(object_type, reference)| {
-            let object = self.objects.get(&reference.0).expect("Reference object not found in object manager. This should never happen!");
+            let (_, object) = self.objects.get(&reference.0).expect("Reference object not found in object manager. This should never happen!");
             for (resource_id, resource) in object.get_type_resources() {
                 match resource.read().unwrap().get_resource() {
                     ObjectTypeGraphicsResourceType::UniformBuffer(data) => {
@@ -931,10 +930,9 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn create_storage_buffer_byte_indices(objects_to_add: &[(&ObjectID, &Box<dyn Renderable>)], object_id_storage_buffer_bytes_indices: &mut HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>) {
+    fn create_storage_buffer_byte_indices(objects_to_add: &[(&ObjectID, &(ObjectType, Box<dyn Renderable>))], object_id_storage_buffer_bytes_indices: &mut HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>) {
         let mut number_of_allocated_storage_buffers_per_object_and_resource_id = HashMap::new();
-        objects_to_add.iter().for_each(|(object_id, object)| {
-            let object_type = ObjectType(object.get_vertices_and_indices_hash());
+        objects_to_add.iter().for_each(|(object_id, (object_type, object))| {
             object.get_object_instance_resources().iter().for_each(|(resource_id, resource)| {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
@@ -948,14 +946,13 @@ impl DataUsedInShader {
         });
     }
 
-    fn copy_storage_buffer_data_to_gpu(objects: &HashMap<ObjectID, Box<dyn Renderable>>, storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_id_storage_buffer_bytes_indices: &HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>, current_frame: usize) {
-        objects.iter().for_each(|(object_id, object)| {
-            let object_type = ObjectType(object.get_vertices_and_indices_hash());
+    fn copy_storage_buffer_data_to_gpu(objects: &HashMap<ObjectID, (ObjectType, Box<dyn Renderable>)>, storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, object_id_storage_buffer_bytes_indices: &HashMap<(ObjectID, ResourceID), (Inclusive, Exclusive)>, current_frame: usize) {
+        objects.iter().for_each(|(object_id, (object_type, object))| {
             for (resource_id, resource) in object.get_object_instance_resources() {
                 let resource_lock = resource.read().unwrap();
                 match resource_lock.get_resource() {
                     ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(buffer) => {
-                        let (_, alloc_buffer) = storage_buffers.get_mut(&(object_type, resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the storage buffer added to the object type?");
+                        let (_, alloc_buffer) = storage_buffers.get_mut(&(*object_type, resource_id)).expect("Dynamic uniform buffer not found for object type. This should never happen. Was the storage buffer added to the object type?");
                         let (start, end) = object_id_storage_buffer_bytes_indices.get(&(*object_id, resource_id)).expect("Dynamic uniform buffer bytes indices not found for object id. This should never happen. Was the storage buffer added to the object id?");
                         if buffer.len() != (end.0 - start.0 + 1) as usize {
                             eprintln!("The storage buffer size does not match the size of the buffer that was allocated for it. This should never happen.");

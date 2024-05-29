@@ -832,13 +832,20 @@ impl VkController {
         }.unwrap();
     }
 
-    pub fn draw_frame(&mut self) {
+    pub fn try_to_draw_frame(&mut self) -> bool {
+        self.draw_frame(0)
+    }
+
+    fn draw_frame(&mut self, timeout: u64) -> bool {
         if self.is_minimized && !self.frame_buffer_resized {
-            return;
+            return false;
         }
 
         unsafe {
-            self.device.wait_for_fences(&[self.in_flight_fences[self.current_frame]], true, u64::MAX).unwrap();
+            match self.device.wait_for_fences(&[self.in_flight_fences[self.current_frame]], true, timeout) {
+                Ok(_) => (),
+                Err(_) => return false,
+            };
         }
 
         let image_index = match unsafe {
@@ -848,7 +855,7 @@ impl VkController {
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.frame_buffer_resized = false;
                 self.recreate_swapchain();
-                return;
+                return false;
             },
             Err(error) => panic!("Failed to acquire next image: {:?}", error),
         };
@@ -912,6 +919,8 @@ impl VkController {
         }
 
         self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT;
+
+        true
     }
 }
 

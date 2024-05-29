@@ -84,9 +84,9 @@ fn main() {
         texture: texture.clone(),
     }));
 
-    let object_ids = vk_controller.add_objects_to_render(vec![obj1.clone(), obj2.clone()]).unwrap();
+    // let object_ids = vk_controller.add_objects_to_render(vec![obj1.clone(), obj2.clone()]).unwrap();
     
-    let num_vertices = 12;//49152*4;
+    let num_vertices = 49152*32;//12;//
 
     // println!("1");
     // let (vertices_one, indices_one) = generate_circle_type_one(1.0, num_vertices);
@@ -152,9 +152,7 @@ fn main() {
         ],
     }));
 
-    dbg!("Now adding object three!");
     let _ = vk_controller.add_objects_to_render(vec![obj_three.clone()]).unwrap();
-    dbg!("Test!");
 
     // let mut current_object_id = vk_controller.add_object_to_render(obj_three.clone()).unwrap();
 
@@ -214,17 +212,17 @@ fn main() {
         if close {
             return;
         }
-        swapchain_extent = vk_controller.get_swapchain_extent();
         
         obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 1.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
         obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 1.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
 
-        vk_controller.draw_frame();
-        frame_count += 1;
-        if last_fps_print.elapsed().as_secs_f32() > 1.0 {
-            println!("FPS: {}", frame_count as f32 / last_fps_print.elapsed().as_secs_f32());
-            frame_count = 0;
-            last_fps_print = std::time::Instant::now();
+        if vk_controller.try_to_draw_frame() {
+            frame_count += 1;
+            if last_fps_print.elapsed().as_secs_f32() > 1.0 {
+                println!("FPS: {}", frame_count as f32 / last_fps_print.elapsed().as_secs_f32());
+                frame_count = 0;
+                last_fps_print = std::time::Instant::now();
+            }
         }
     });
 }
