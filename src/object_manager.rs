@@ -1,16 +1,3 @@
-
-
-// The manager needs (per shader):
-// - all object types, and how many of each type to draw
-// - all vertices (for all objects)
-//     - also which indexes in the vec that belongs to which type of object
-// - all indices
-//     - also which indexes in the vec that belongs to which type of object
-// - all static textures (if the shader is set up to have multiple textures per object we need to have multiple texture arrays)
-// - all uniform buffer data that is the same for the object type (not dynamic)
-// - all "uniform buffer" data (if the shader is set up to have multiple uniform buffers per object we need to have multiple shader storage buffers)
-//     - This is the per instance object data (STORAGE_BUFFER)
-
 use std::{borrow::Cow, collections::{hash_map::Entry, HashMap, HashSet}, hash::{DefaultHasher, Hash, Hasher}};
 
 use ash::{vk::{self, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, Extent2D, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
@@ -152,9 +139,6 @@ impl ObjectManager {
             let mut hasher = DefaultHasher::new();
             pipeline_config.hash(&mut hasher);
             let pipeline_hash = hasher.finish();
-            // if !self.data_used_in_shader.contains_key(&pipeline_config) {
-                
-            // }
 
             let object_ids = objects_with_pipeline_to_add.iter().map(|(id, _)| *id).collect::<Vec<_>>();
             if let Entry::Occupied(mut data_used_in_shader) = self.data_used_in_shader.entry(pipeline_config.clone()) {

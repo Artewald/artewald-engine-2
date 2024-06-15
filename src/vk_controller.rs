@@ -39,32 +39,16 @@ pub struct VkController {
     swapchain_image_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<ImageView>,
-    // render_pass: vk::RenderPass,
-    // pipeline_layout: vk::PipelineLayout,
-    // descriptor_set_layout: vk::DescriptorSetLayout,
-    // graphics_pipeline: vk::Pipeline,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<Vec<vk::CommandBuffer>>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
-    // vertices: Vec<SimpleVertex>,
-    // indices: Vec<u32>,
-    // vertex_allocation: Option<AllocationInfo>,
-    // index_allocation: Option<AllocationInfo>,
-    // object_id_to_pipeline: HashMap<ObjectID, PipelineConfig>,
-    // object_id_to_vertices_indices_hash: HashMap<ObjectID, VerticesIndicesHash>,
-    // objects_to_render: HashMap<(PipelineConfig, VerticesIndicesHash), ObjectsToRender>,
-    // uniform_allocation: Option<AllocationInfo>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
     is_minimized: bool,
     descriptor_pool: vk::DescriptorPool,
-    // descriptor_sets: Vec<vk::DescriptorSet>,
-    // mip_levels: u32,
-    // texture_image_allocation: Option<AllocationInfo>,
-    // texture_sampler: vk::Sampler,
     color_image_allocation: Option<AllocationInfo>,
     depth_image_allocation: Option<AllocationInfo>,
     msaa_samples: vk::SampleCountFlags,
@@ -153,7 +137,7 @@ impl VkController {
         let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
 
         // let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
-      
+
         let mut command_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
             command_buffers.push(Self::create_command_buffers(&device, &command_pool, 1));
@@ -177,30 +161,18 @@ impl VkController {
             swapchain_image_format,
             swapchain_extent,
             swapchain_image_views,
-            // pipeline_layout,
-            // render_pass,
-            // descriptor_set_layout,
-            // graphics_pipeline,
             swapchain_framebuffers,
             command_pool,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-            // object_id_to_vertices_indices_hash: HashMap::new(),
-            // object_id_to_pipeline: HashMap::new(),
-            // objects_to_render,
-            // uniform_allocation: Some(uniform_allocation),
             current_frame: 0,
             frame_buffer_resized: false,
             is_minimized: false,
             descriptor_pool,
-            // descriptor_sets,
-            // texture_image_allocation: Some(texture_image_allocation),
-            // texture_sampler,
             color_image_allocation: Some(color_image_allocation),
             depth_image_allocation: Some(depth_image_allocation),
-            // mip_levels,
             msaa_samples,
             allocator,
             graphics_pipeline_manager: pipeline_manager,
@@ -809,7 +781,6 @@ impl VkController {
         let viewport = Self::get_viewport(swapchain_extent);
         let scissor = Self::get_scissor(swapchain_extent);
 
-        // let vertex_buffers = [vertex_allocation.get_buffer().unwrap()];
         let offsets = [0_u64];
 
         unsafe {
@@ -963,12 +934,6 @@ impl VkController {
 
 // Resource management
 impl VkController {
-    // fn create_uniform_buffers(allocator: &mut VkAllocator) -> AllocationInfo {
-    //     let buffer_size = std::mem::size_of::<UniformBufferObject>();
-
-    //     allocator.create_uniform_buffers(buffer_size, Self::MAX_FRAMES_IN_FLIGHT).unwrap()
-    // }
-
     fn create_descriptor_pool(device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorPool {
         let pool_sizes = [
             vk::DescriptorPoolSize {
@@ -1123,7 +1088,6 @@ impl VkController {
 
 
 pub trait VkControllerGraphicsObjectsControl<T: Vertex + Clone> {
-    // , Vec<(ResourceID, fn() -> ObjectTypeGraphicsResourceType, DescriptorSetLayoutBinding)>)
     fn add_objects_to_render(&mut self, original_objects: Vec<Arc<RwLock<dyn GraphicsObject<T>>>>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>>;
 }
 
@@ -1145,11 +1109,4 @@ impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkCo
         dbg!("Objects added to object manager!");
         Ok(object_id_to_object)
     }
-}
-
-struct ObjectsToRender {
-    pub vertex_allocation: Option<VertexAllocation>,
-    pub index_allocation: Option<IndexAllocation>,
-    pub num_indices: u32,
-    pub objects: Vec<(ObjectID, Box<dyn Renderable>)>,
 }

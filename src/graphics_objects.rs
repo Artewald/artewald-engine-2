@@ -2,7 +2,6 @@ use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::P
 
 use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
 use image::DynamicImage;
-use nalgebra_glm as glm;
 
 use crate::{pipeline_manager::{ObjectInstanceGraphicsResource, ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VerticesIndicesHash, VkController}};
 
@@ -17,8 +16,6 @@ macro_rules! free_allocations_add_error_string {
         }
     };
 }
-
-type ResourceAllocation = (ResourceID, vk::DescriptorSetLayoutBinding, AllocationInfo, DescriptorType, Option<Sampler>);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
 pub struct ResourceID(pub u32);

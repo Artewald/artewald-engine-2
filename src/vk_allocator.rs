@@ -274,13 +274,8 @@ impl VkAllocator {
                 return Err(Cow::from(format!("Failed to copy buffer to image when creating device local image because: {}", err)));
             },
         };
-        //Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, mip_levels);
         
         self.free_memory_allocation(staging_allocation)?;
-        // unsafe {
-        //     // device.destroy_buffer(staging_buffer, Some(&mut allocator.get_allocation_callbacks()));
-        //     // device.free_memory(staging_buffer_memory, Some(&mut allocator.get_allocation_callbacks()));
-        // }
         
         self.generate_mipmaps(command_pool, graphics_queue, &image_allocation.image.unwrap(), vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels)?;
         
@@ -480,17 +475,6 @@ impl VkAllocator {
                 base_array_layer: 0,
                 layer_count: 1,
             },
-            // src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
-            //     vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
-            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            //     _ => panic!("Unsupported layout transition!"),
-            // },
-            // dst_access_mask: match new_layout {
-            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
-            //     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            //     _ => panic!("Unsupported layout transition!"),
-            // },
             ..Default::default()
         };
 
@@ -505,7 +489,6 @@ impl VkAllocator {
                 barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
                 (vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER)
             },
-            //(vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS),
             _ => panic!("Unsupported layout transition! {} {}", old_layout.as_raw(), new_layout.as_raw()),
         };
 
