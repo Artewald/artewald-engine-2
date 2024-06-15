@@ -29,9 +29,6 @@ pub struct UniformBufferResource<T: Clone> {
     pub binding: u32,
 }
 
-impl SerializableDebug for UniformBufferObject {}
-
-
 #[derive(Clone)]
 pub struct StorageBufferResource<T: Clone> {
     pub buffer: T,
