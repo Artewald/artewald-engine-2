@@ -29,6 +29,9 @@ pub struct UniformBufferResource<T: Clone> {
     pub binding: u32,
 }
 
+impl SerializableDebug for UniformBufferObject {}
+
+
 #[derive(Clone)]
 pub struct StorageBufferResource<T: Clone> {
     pub buffer: T,
@@ -114,7 +117,7 @@ impl<T: Vertex> Renderable for Arc<RwLock<dyn GraphicsObject<T>>> {
     fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash {
         self.read().unwrap().get_vertices_and_indices_hash()
     }
-    
+
     fn get_vertex_byte_data(&self) -> Vec<u8> {
         let original_object_locked = self.read().unwrap();
         let vertices = original_object_locked.get_vertices();

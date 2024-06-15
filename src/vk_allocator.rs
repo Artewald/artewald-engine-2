@@ -341,6 +341,10 @@ impl VkAllocator {
         Ok(())
     }
 
+    fn slice_of_serializable_to_u8<T: Serializable>(vec: &[T]) -> Vec<u8> {
+        vec.iter().map(|item| item.to_u8()).flatten().collect()
+    }
+
     fn generate_mipmaps(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, image: &vk::Image, image_format: vk::Format, width: u32, height: u32, mip_levels: u32) -> Result<(), Cow<'static, str>> {
         let format_properties = unsafe {
             self.instance.get_physical_device_format_properties(self.physical_device, image_format)

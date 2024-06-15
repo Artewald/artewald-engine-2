@@ -153,7 +153,7 @@ impl VkController {
         let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
 
         // let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
-
+      
         let mut command_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
         for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
             command_buffers.push(Self::create_command_buffers(&device, &command_pool, 1));
