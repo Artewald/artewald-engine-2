@@ -1,125 +1,147 @@
-use std::{fmt::Formatter, path::PathBuf};
+use std::{borrow::Cow, collections::{hash_map, HashMap}, fmt::Formatter, path::PathBuf, sync::{Arc, RwLock}, time::Instant};
 
-use ash::vk;
-use nalgebra_glm as glm;
+use ash::{vk::{self, CommandPool, DescriptorBufferInfo, DescriptorImageInfo, DescriptorPool, DescriptorSet, DescriptorSetAllocateInfo, DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorType, PhysicalDevice, Queue, Sampler, StructureType, WriteDescriptorSet}, Device, Instance};
+use image::DynamicImage;
 
-use crate::{vertex::Vertex, vk_allocator::Serializable, vk_controller::SerializableDebug};
+use crate::{pipeline_manager::{ObjectInstanceGraphicsResource, ObjectInstanceGraphicsResourceType, ObjectTypeGraphicsResource, ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, ShaderInfo, Vertex}, sampler_manager::{SamplerConfig, SamplerManager}, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}, vk_controller::{self, IndexAllocation, VertexAllocation, VerticesIndicesHash, VkController}};
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C, align(16))]
-pub struct UniformBufferObject {
-    pub model: glm::Mat4,
-    pub view: glm::Mat4,
-    pub proj: glm::Mat4,
+#[macro_export]
+macro_rules! free_allocations_add_error_string {
+    ($allocator: expr, $allocations: expr, $error_string: expr) => {
+        for allocation in $allocations {
+            let error = $allocator.free_memory_allocation(allocation);
+            if let Err(err) = error {
+                $error_string.push_str(&format!("\n{}", err));
+            }
+        }
+    };
 }
 
-impl Serializable for UniformBufferObject {
-    fn to_u8(&self) -> Vec<u8> {
-        let bytes: [u8; std::mem::size_of::<Self>()] = unsafe { std::mem::transmute(*self) };
-        bytes.to_vec()
-    }
-    
-    fn byte_size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
-impl SerializableDebug for UniformBufferObject {}
-
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Copy, Clone)]
+pub struct ResourceID(pub u32);
 
 #[derive(Clone)]
-pub struct ShaderInfo {
-    path: PathBuf,
-    stage: vk::ShaderStageFlags,
-    entry_point: String,
+pub struct UniformBufferResource<T: Clone> {
+    pub buffer: T,
+    pub binding: u32,
 }
 
-impl ShaderInfo {
-    pub fn new(path: PathBuf, stage: vk::ShaderStageFlags, entry_point: String) -> Self {
-        if !path.exists() {
-            panic!("Shader file {:?} does not exist", path);
-        }
-        ShaderInfo { path, stage, entry_point }
-    }
+#[derive(Clone)]
+pub struct StorageBufferResource<T: Clone> {
+    pub buffer: T,
+    pub binding: u32,
 }
 
-impl std::fmt::Debug for ShaderInfo {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ShaderInfo {{ path: {:?}, stage: {}, entry_point: {} }}", self.path, self.stage.as_raw(), self.entry_point)
-    }
-}
-
-#[derive(Debug)]
-pub enum DescriptorContent {
-    UniformBuffer(Box<dyn SerializableDebug>),
-    Texture(PathBuf),
-}
-
-pub struct RenderableObject<T: SerializableDebug> {
-    shaders: Vec<ShaderInfo>,
-    vertex_binding_info: vk::VertexInputBindingDescription,
-    vertex_attribute_info: Vec<vk::VertexInputAttributeDescription>,
-    vertices: Vec<T>,
-    binding_descriptions: Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>,
-}
-
-impl<T: SerializableDebug> RenderableObject<T> {
-    pub fn new(
-        shaders: Vec<ShaderInfo>,
-        vertex_binding_info: vk::VertexInputBindingDescription,
-        vertex_attribute_info: Vec<vk::VertexInputAttributeDescription>,
-        vertices: Vec<T>,
-        binding_descriptions: Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>,
-    ) -> Self {
-        if shaders.len() < 2 {
-            panic!("RenderableObject must have at least 2 shaders");
-        }
-        if vertex_attribute_info.len() == 0 {
-            panic!("RenderableObject must have at least 1 vertex attribute");
-        }
-        if vertices.len() == 1 {
-            panic!("RenderableObject must have at least 3 vertex");
-        }
-        RenderableObject {
-            shaders,
-            vertex_binding_info,
-            vertex_attribute_info,
-            vertices,
-            binding_descriptions,
+impl<T: Clone + Serializable> ObjectTypeGraphicsResource for UniformBufferResource<T> {
+    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
+        vk::DescriptorSetLayoutBinding {
+            binding: self.binding,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: std::ptr::null(),
         }
     }
 
-    pub fn get_shaders(&self) -> &Vec<ShaderInfo> {
-        &self.shaders
-    }
-
-    pub fn get_vertex_binding_info(&self) -> &vk::VertexInputBindingDescription {
-        &self.vertex_binding_info
-    }
-
-    pub fn get_vertex_attribute_info(&self) -> &Vec<vk::VertexInputAttributeDescription> {
-        &self.vertex_attribute_info
-    }
-
-    pub fn get_vertices(&self) -> &Vec<T> {
-        &self.vertices
-    }
-
-    pub fn get_binding_descriptions(&self) -> &Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)> {
-        &self.binding_descriptions
+    fn get_resource(&self) -> crate::pipeline_manager::ObjectTypeGraphicsResourceType {
+        ObjectTypeGraphicsResourceType::UniformBuffer(self.buffer.to_u8())
     }
 }
 
-impl<T: SerializableDebug> std::fmt::Debug for RenderableObject<T>   {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RenderableObject {{ shaders: {:?}, vertices: {:?}, ", self.shaders, self.vertices)?;
-        write!(f, "vertex_binding_info {{ binding: {}, stride: {}, input_rate: {} }}, ", self.vertex_binding_info.binding, self.vertex_binding_info.stride, self.vertex_binding_info.input_rate.as_raw())?; //, vertex_binding_info: {:?},
-        for attribute_info in self.vertex_attribute_info.iter() {
-            write!(f, "vertex_attribute_info {{ location: {}, binding: {}, format: {}, offset: {} }}, ", attribute_info.location, attribute_info.binding, attribute_info.format.as_raw(), attribute_info.offset)?;
-        }; //vertex_attribute_info: {:?}
-        for (descriptor_content, descriptor_set_layout_binding) in self.binding_descriptions.iter() {
-            write!(f, "descriptor_content: {:?}, descriptor_set_layout_binding {{ binding: {}, descriptor_type: {}, descriptor_count: {}, stage_flags: {}, p_immutable_samplers: {:?} }}, ", descriptor_content, descriptor_set_layout_binding.binding, descriptor_set_layout_binding.descriptor_type.as_raw(), descriptor_set_layout_binding.descriptor_count, descriptor_set_layout_binding.stage_flags.as_raw(), descriptor_set_layout_binding.p_immutable_samplers)?; //, binding_descriptions: {:?} }}
+impl<T:Clone + Serializable> ObjectInstanceGraphicsResource for UniformBufferResource<T> {
+    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
+        vk::DescriptorSetLayoutBinding {
+            binding: self.binding,
+            descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX,
+            p_immutable_samplers: std::ptr::null(),
         }
-        Ok(())
     }
+
+    fn get_resource(&self) -> crate::pipeline_manager::ObjectInstanceGraphicsResourceType {
+        ObjectInstanceGraphicsResourceType::DynamicStorageBuffer(self.buffer.to_u8())
+    }
+}
+
+pub struct TextureResource {
+    pub image: DynamicImage,
+    pub binding: u32,
+    pub stage: vk::ShaderStageFlags,
+    // pub sampler: Sampler,
+}
+
+impl ObjectTypeGraphicsResource for TextureResource {
+    fn get_descriptor_set_layout_binding(&self) -> vk::DescriptorSetLayoutBinding {
+        vk::DescriptorSetLayoutBinding {
+            binding: self.binding,
+            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_count: 1,
+            stage_flags: self.stage,
+            p_immutable_samplers: std::ptr::null(),
+        }
+    }
+
+    fn get_resource(&self) -> ObjectTypeGraphicsResourceType {
+        ObjectTypeGraphicsResourceType::Texture(self.image.clone())
+    }
+}
+
+pub trait GraphicsObject<T: Vertex> {
+    fn get_vertices(&self) -> Vec<T>;
+    fn get_indices(&self) -> Vec<u32>;
+    fn get_instance_resources(&self) -> Vec<(ResourceID, Arc<RwLock<dyn ObjectInstanceGraphicsResource>>)>;
+    fn get_shader_infos(&self) -> Vec<ShaderInfo>;
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash;
+    fn get_type_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectTypeGraphicsResource + 'static)>>)>;
+}
+
+pub trait Renderable {
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash;
+    fn get_vertex_byte_data(&self) -> Vec<u8>;
+    fn get_indices(&self) -> Vec<u32>;
+    fn get_object_instance_resources(&self) -> Vec<(ResourceID, Arc<RwLock<dyn ObjectInstanceGraphicsResource>>)>;
+    fn get_vertex_binding_info(&self) -> vk::VertexInputBindingDescription;
+    fn get_vertex_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription>;
+    fn get_shader_infos(&self) -> Vec<ShaderInfo>;
+    fn get_type_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectTypeGraphicsResource + 'static)>>)>;
+}
+
+impl<T: Vertex> Renderable for Arc<RwLock<dyn GraphicsObject<T>>> {
+    fn get_vertices_and_indices_hash(&self) -> VerticesIndicesHash {
+        self.read().unwrap().get_vertices_and_indices_hash()
+    }
+
+    fn get_vertex_byte_data(&self) -> Vec<u8> {
+        let original_object_locked = self.read().unwrap();
+        let vertices = original_object_locked.get_vertices();
+        let vertex_data = vertices.iter().map(|v| v.to_u8()).flatten().collect::<Vec<u8>>();
+        vertex_data
+    }
+    
+    fn get_indices(&self) -> Vec<u32> {
+        self.read().unwrap().get_indices()
+    }
+    
+    fn get_object_instance_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectInstanceGraphicsResource + 'static)>>)> {
+        self.read().unwrap().get_instance_resources()
+    }
+    
+    fn get_shader_infos(&self) -> Vec<ShaderInfo> {
+        self.read().unwrap().get_shader_infos()
+    }
+    
+    fn get_vertex_binding_info(&self) -> vk::VertexInputBindingDescription {
+        T::get_input_binding_description()
+    }
+    
+    fn get_vertex_attribute_descriptions(&self) -> Vec<vk::VertexInputAttributeDescription> {
+        T::get_attribute_descriptions()
+    }
+    
+    fn get_type_resources(&self) -> Vec<(ResourceID, Arc<RwLock<(dyn ObjectTypeGraphicsResource + 'static)>>)> {
+        self.read().unwrap().get_type_resources()
+    }
+    
+    
 }

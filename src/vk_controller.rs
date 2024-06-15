@@ -1,20 +1,27 @@
-use std::{borrow::Cow, collections::{hash_map, HashMap, HashSet}, fs::read_to_string, hash::Hash, rc::Rc, time::Instant};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, rc::Rc, sync::{Arc, RwLock}};
 
-use ash::{Entry, Instance, vk::{self, DebugUtilsMessengerCreateInfoEXT, DeviceCreateInfo, DeviceQueueCreateInfo, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, extensions::{khr::{Swapchain, Surface}, ext::DebugUtils}};
+use ash::{extensions::{ext::DebugUtils, khr::{Surface, Swapchain}}, vk::{self, DebugUtilsMessengerCreateInfoEXT, DescriptorSetLayoutBinding, DeviceCreateInfo, DeviceQueueCreateInfo, ExtDescriptorIndexingFn, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, Entry, Instance};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
-use shaderc::{Compiler, ShaderKind};
 use winit::window::Window;
-use nalgebra_glm as glm;
 
-use crate::{graphics_objects::{DescriptorContent, RenderableObject, ShaderInfo, UniformBufferObject}, vertex::{Vertex, TEST_RECTANGLE, TEST_RECTANGLE_INDICES}, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
+use crate::{graphics_objects::{GraphicsObject, Renderable, ResourceID}, pipeline_manager::{ObjectTypeGraphicsResourceType, PipelineConfig, PipelineManager, Vertex}, sampler_manager::SamplerManager, object_manager::ObjectManager, vertex::SimpleVertex, vk_allocator::{AllocationInfo, Serializable, VkAllocator}};
 
-pub trait SerializableDebug: Serializable + std::fmt::Debug {}
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
+pub struct ObjectID(pub usize);
+
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
+pub struct ReferenceObjectID(pub ObjectID);
+
+type FrameCounter = usize;
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone, Copy)]
+pub struct VerticesIndicesHash(pub u64);
+pub type VertexAllocation = AllocationInfo;
+pub type IndexAllocation = AllocationInfo;
 
 #[cfg(debug_assertions)]
 const IS_DEBUG_MODE: bool = true;
 #[cfg(not(debug_assertions))]
 const IS_DEBUG_MODE: bool = false;
-
 
 pub struct VkController {
     window: Window,
@@ -32,36 +39,23 @@ pub struct VkController {
     swapchain_image_format: vk::Format,
     swapchain_extent: vk::Extent2D,
     swapchain_image_views: Vec<ImageView>,
-    render_pass: vk::RenderPass,
-    //pipeline_layout: vk::PipelineLayout,
-    pipeline_layouts: HashMap<Vec<(DescriptorContent, vk::DescriptorSetLayoutBinding)>, vk::PipelineLayout>,
-    descriptor_set_layout: vk::DescriptorSetLayout,
-    // graphics_pipeline: vk::Pipeline,
-    graphics_pipelines: HashMap<(Vec<ShaderInfo>, vk::VertexInputBindingDescription, Vec<vk::VertexInputAttributeDescription>), vk::Pipeline>,
     swapchain_framebuffers: Vec<vk::Framebuffer>,
     command_pool: vk::CommandPool,
-    command_buffers: Vec<vk::CommandBuffer>,
+    command_buffers: Vec<Vec<vk::CommandBuffer>>,
     image_available_semaphores: Vec<vk::Semaphore>,
     render_finished_semaphores: Vec<vk::Semaphore>,
     in_flight_fences: Vec<vk::Fence>,
-    vertices: Vec<Vertex>,
-    indices: Vec<u32>,
-    vertex_allocation: Option<AllocationInfo>,
-    index_allocation: Option<AllocationInfo>,
-    uniform_allocation: Option<AllocationInfo>,
     current_frame: usize,
     pub frame_buffer_resized: bool,
     is_minimized: bool,
-    start_time: Instant,
     descriptor_pool: vk::DescriptorPool,
-    descriptor_sets: Vec<vk::DescriptorSet>,
-    mip_levels: u32,
-    texture_image_allocation: Option<AllocationInfo>,
-    texture_sampler: vk::Sampler,
     color_image_allocation: Option<AllocationInfo>,
     depth_image_allocation: Option<AllocationInfo>,
     msaa_samples: vk::SampleCountFlags,
     allocator: VkAllocator,
+    graphics_pipeline_manager: PipelineManager,
+    sampler_manager: SamplerManager,
+    object_manager: ObjectManager,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -84,9 +78,10 @@ struct SwapchainSupportDetails {
 
 // Instance and device management
 impl VkController {
-    const DEVICE_EXTENSIONS: [*const i8; 1] = [Swapchain::name().as_ptr()];
-    const MAX_FRAMES_IN_FLIGHT: usize = 2;
+    const DEVICE_EXTENSIONS: [*const i8; 2] = [Swapchain::name().as_ptr(), ExtDescriptorIndexingFn::name().as_ptr()];
+    pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
     const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
+    pub const MAX_OBJECT_TYPES:  usize = 1000;
 
     pub fn new(window: Window, application_name: &str) -> Self {
         let entry = Entry::linked();
@@ -126,80 +121,30 @@ impl VkController {
         let swapchain_extent = Self::choose_swap_extent(&Self::query_swapchain_support(&entry, &instance, &physical_device, &surface).capabilities, &window);
         
         let swapchain_image_views = Self::create_image_views(&device, &swapchain_images, swapchain_image_format, &mut allocator );
-
-        let render_pass = Self::create_render_pass(swapchain_image_format, &device, &instance, &physical_device, msaa_samples, &mut allocator );
         
-        let (vertices, indices) = Self::load_model("./assets/objects/viking_room.obj");
-
-        let vert_shader = ShaderInfo::new(std::path::PathBuf::from("./assets/shaders/triangle.vert"), vk::ShaderStageFlags::VERTEX, "main".to_string());
-        let frag_shader = ShaderInfo::new(std::path::PathBuf::from("./assets/shaders/triangle.frag"), vk::ShaderStageFlags::FRAGMENT, "main".to_string());
-
-        let ubo_layout_binding = vk::DescriptorSetLayoutBinding {
-            binding: 0,
-            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::VERTEX,
-            p_immutable_samplers: std::ptr::null(),
-        };
-
-        let sampler_layout_binding = vk::DescriptorSetLayoutBinding {
-            binding: 1,
-            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: 1,
-            stage_flags: vk::ShaderStageFlags::FRAGMENT,
-            p_immutable_samplers: std::ptr::null(),
-        };
-
-        let elapsed = 0.0;
-        let mut ubo = UniformBufferObject {
-            model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-            view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-            proj: glm::perspective(swapchain_extent.width as f32 / swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        };
-        ubo.proj[(1, 1)] *= -1.0;
-
-        let layout_bindings = vec![(DescriptorContent::UniformBuffer(Box::new(ubo)), ubo_layout_binding), (DescriptorContent::Texture(std::path::PathBuf::from("./assets/images/viking_room.png")), sampler_layout_binding)];
-
-        let render_object = RenderableObject::new(vec![vert_shader, frag_shader], Vertex::vertex_input_binding_descriptions(), Vertex::get_attribute_descriptions(), vertices, layout_bindings);
-
-        let descriptor_set_layout = Self::create_descriptor_set_layout(&device, render_object.get_binding_descriptions().iter().map(|(_, x)| x.clone()).collect::<Vec<_>>().as_slice(), &mut allocator );
-        
-        let mut pipeline_layouts = HashMap::new();
-
-        let pipeline_layout = Self::create_pipeline_layout(&device, &descriptor_set_layout, &mut allocator );
-
-        let mut graphics_pipelines = HashMap::new();
-
-        let graphics_pipeline = Self::create_graphics_pipeline(&device, &swapchain_extent, &pipeline_layout, &render_pass, msaa_samples, &mut allocator );
-
-        let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
-
         let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
         
         let depth_image_allocation = Self::create_depth_resources(&instance, &physical_device, &swapchain_extent, msaa_samples, &mut allocator );
         
-        let swapchain_framebuffers = Self::create_framebuffers(&device, &render_pass, &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
         
-        let (mut texture_image_allocation, mip_levels) = Self::create_texture_image(&command_pool, &graphics_queue, &mut allocator );
+        let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
 
-        Self::create_texture_image_view(&mut texture_image_allocation, mip_levels, &mut allocator );
-
-        let texture_sampler = Self::create_texture_sampler(&device, &instance, &physical_device, mip_levels, &mut allocator );
-
-        let vertex_allocation = Self::create_vertex_buffer(&command_pool, &graphics_queue, &vertices, &mut allocator );
-
-        let index_allocation = Self::create_index_buffer(&command_pool, &graphics_queue, &indices, &mut allocator );
-
-        let uniform_allocation = Self::create_uniform_buffers(std::mem::size_of::<UniformBufferObject>(), &mut allocator );
-        
         let descriptor_pool = Self::create_descriptor_pool(&device, &mut allocator );
-        
-        let descriptor_sets = Self::create_descriptor_sets(&device, &descriptor_pool, &uniform_allocation, &descriptor_set_layout, &texture_image_allocation, &texture_sampler);
-        
-        let command_buffers = Self::create_command_buffers(&device, &command_pool);
+        let sampler_manager = SamplerManager::new();
+
+        let pipeline_manager = PipelineManager::new(&device, swapchain_image_format, msaa_samples, Self::find_depth_format(&instance, &physical_device), &mut allocator);
+
+        let swapchain_framebuffers = Self::create_framebuffers(&device, &pipeline_manager.get_render_pass().unwrap(), &swapchain_image_views, &swapchain_extent, &depth_image_allocation, &color_image_allocation, &mut allocator );
+
+        // let uniform_allocation = Self::create_uniform_buffers(&mut allocator );
+
+        let mut command_buffers = Vec::with_capacity(Self::MAX_FRAMES_IN_FLIGHT);
+        for _ in 0..Self::MAX_FRAMES_IN_FLIGHT {
+            command_buffers.push(Self::create_command_buffers(&device, &command_pool, 1));
+        }
         
         let (image_available_semaphores, render_finished_semaphores, in_flight_fences) = Self::create_sync_objects(&device, &mut allocator );
-        
+
         Self {
             window,
             entry,
@@ -216,36 +161,23 @@ impl VkController {
             swapchain_image_format,
             swapchain_extent,
             swapchain_image_views,
-            // pipeline_layout,
-            pipeline_layouts,
-            render_pass,
-            descriptor_set_layout,
-            // graphics_pipeline,
-            graphics_pipelines,
             swapchain_framebuffers,
             command_pool,
             command_buffers,
             image_available_semaphores,
             render_finished_semaphores,
             in_flight_fences,
-            vertex_allocation: Some(vertex_allocation),
-            index_allocation: Some(index_allocation),
-            uniform_allocation: Some(uniform_allocation),
             current_frame: 0,
             frame_buffer_resized: false,
             is_minimized: false,
-            start_time: Instant::now(),
             descriptor_pool,
-            descriptor_sets,
-            texture_image_allocation: Some(texture_image_allocation),
-            texture_sampler,
             color_image_allocation: Some(color_image_allocation),
             depth_image_allocation: Some(depth_image_allocation),
-            vertices,
-            indices,
-            mip_levels,
             msaa_samples,
             allocator,
+            graphics_pipeline_manager: pipeline_manager,
+            sampler_manager,
+            object_manager: ObjectManager::new(),
         }
     }
 
@@ -470,6 +402,7 @@ impl VkController {
         let device_features = vk::PhysicalDeviceFeatures {
             sampler_anisotropy: vk::TRUE,
             sample_rate_shading: vk::TRUE, // This may cause performance loss, but it's not required
+            fill_mode_non_solid: vk::TRUE, // This is only required for wireframe rendering
             ..Default::default()
         };
 
@@ -510,24 +443,14 @@ impl VkController {
 
             self.cleanup_swapchain();
 
-            self.device.destroy_sampler(self.texture_sampler, Some(&self.allocator.get_allocation_callbacks()));
-            self.allocator.free_memory_allocation(self.texture_image_allocation.take().unwrap()).unwrap();
+            self.sampler_manager.destroy_samplers(&self.device, &mut self.allocator);
 
-            self.allocator.free_memory_allocation(self.uniform_allocation.take().unwrap()).unwrap();
+            self.object_manager.destroy_all_objects(&self.device, &self.descriptor_pool, &mut self.allocator);
 
             self.device.destroy_descriptor_pool(self.descriptor_pool, Some(&self.allocator.get_allocation_callbacks()));
 
-            self.device.destroy_descriptor_set_layout(self.descriptor_set_layout, Some(&self.allocator.get_allocation_callbacks()));
-
-            self.device.destroy_pipeline(self.graphics_pipeline, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_pipeline_layout(self.pipeline_layout, Some(&self.allocator.get_allocation_callbacks()));
-            self.device.destroy_render_pass(self.render_pass, Some(&self.allocator.get_allocation_callbacks()));
             
-            self.allocator.free_memory_allocation(self.index_allocation.take().unwrap()).unwrap();
-            self.index_allocation = None;
-
-            self.allocator.free_memory_allocation(self.vertex_allocation.take().unwrap()).unwrap();
-            self.vertex_allocation = None;
+            self.graphics_pipeline_manager.destroy(&self.device, &mut self.allocator);
 
             for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
                 self.device.destroy_semaphore(self.render_finished_semaphores[i], Some(&self.allocator.get_allocation_callbacks()));
@@ -689,7 +612,7 @@ impl VkController {
         self.swapchain_extent = Self::choose_swap_extent(&swapchain_capabilities.capabilities, &self.window);
         self.color_image_allocation = Some(Self::create_color_resources(self.swapchain_image_format, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
         self.depth_image_allocation = Some(Self::create_depth_resources(&self.instance, &self.physical_device, &self.swapchain_extent, self.msaa_samples, &mut self.allocator));
-        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.render_pass, &self.swapchain_image_views, &self.swapchain_extent, self.depth_image_allocation.as_ref().unwrap(), self.color_image_allocation.as_ref().unwrap(), &mut self.allocator);
+        self.swapchain_framebuffers = Self::create_framebuffers(&self.device, &self.graphics_pipeline_manager.get_render_pass().unwrap(), &self.swapchain_image_views, &self.swapchain_extent, self.depth_image_allocation.as_ref().unwrap(), self.color_image_allocation.as_ref().unwrap(), &mut self.allocator);
     }
 
     fn cleanup_swapchain(&mut self) {
@@ -709,13 +632,13 @@ impl VkController {
         }
     }
 
-    fn create_image_views(device: &Device, swapchain_images: &Vec<Image>, swapchain_image_format: vk::Format, allocator: &mut VkAllocator) -> Vec<ImageView> {
+    fn create_image_views(device: &Device, swapchain_images: &[Image], swapchain_image_format: vk::Format, allocator: &mut VkAllocator) -> Vec<ImageView> {
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
 
-        for i in 0..swapchain_images.len() {
+        for swapchain_image in swapchain_images {
             let view_info = vk::ImageViewCreateInfo {
                 s_type: StructureType::IMAGE_VIEW_CREATE_INFO,
-                image: swapchain_images[i],
+                image: *swapchain_image,
                 view_type: vk::ImageViewType::TYPE_2D,
                 format: swapchain_image_format,
                 subresource_range: vk::ImageSubresourceRange {
@@ -740,288 +663,6 @@ impl VkController {
 
 // Rendering and graphics pipeline
 impl VkController {
-    fn create_graphics_pipeline(device: &Device, swapchain_extent: &vk::Extent2D, pipeline_layout: &vk::PipelineLayout, render_pass: &vk::RenderPass, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> vk::Pipeline {
-        let vert_shader_code = Self::compile_shader("./assets/shaders/triangle.vert", ShaderKind::Vertex, "triangle.vert");
-        let frag_shader_code = Self::compile_shader("./assets/shaders/triangle.frag", ShaderKind::Fragment, "triangle.frag");
-
-        let vert_shader_module = Self::create_shader_module(device, vert_shader_code, allocator);
-        let frag_shader_module = Self::create_shader_module(device, frag_shader_code, allocator);
-
-        let vert_shader_stage_info = vk::PipelineShaderStageCreateInfo {
-            s_type: StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-            stage: vk::ShaderStageFlags::VERTEX,
-            module: vert_shader_module,
-            p_name: "main".as_ptr().cast(),
-            ..Default::default()
-        };
-
-        let frag_shader_stage_info = vk::PipelineShaderStageCreateInfo {
-            s_type: StructureType::PIPELINE_SHADER_STAGE_CREATE_INFO,
-            stage: vk::ShaderStageFlags::FRAGMENT,
-            module: frag_shader_module,
-            p_name: "main".as_ptr().cast(),
-            ..Default::default()
-        };
-
-
-        let binding_description = Vertex::vertex_input_binding_descriptions();
-        let attribute_descriptions = Vertex::get_attribute_descriptions();
-        let shader_stages = [vert_shader_stage_info, frag_shader_stage_info];
-
-        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
-            s_type: StructureType::PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            vertex_binding_description_count: 1,
-            p_vertex_binding_descriptions: &binding_description,
-            vertex_attribute_description_count: attribute_descriptions.len() as u32,
-            p_vertex_attribute_descriptions: attribute_descriptions.as_ptr(),
-            ..Default::default()
-        };
-
-        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo {
-            s_type: StructureType::PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-            primitive_restart_enable: vk::FALSE,
-            ..Default::default()
-        };
-
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-
-        let dynamic_state = vk::PipelineDynamicStateCreateInfo {
-            s_type: StructureType::PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            dynamic_state_count: dynamic_states.len() as u32,
-            p_dynamic_states: dynamic_states.as_ptr(),
-            ..Default::default()
-        };
-
-        let viewport = Self::get_viewport(swapchain_extent);
-        let scissor = Self::get_scissor(swapchain_extent);
-
-        let viewport_state = vk::PipelineViewportStateCreateInfo {
-            s_type: StructureType::PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            viewport_count: 1,
-            p_viewports: &viewport,
-            scissor_count: 1,
-            p_scissors: &scissor,
-            ..Default::default()
-        };
-
-        let rasterizer = vk::PipelineRasterizationStateCreateInfo {
-            s_type: StructureType::PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            depth_clamp_enable: vk::FALSE,
-            rasterizer_discard_enable: vk::FALSE,
-            polygon_mode: vk::PolygonMode::FILL,
-            line_width: 1.0,
-            cull_mode: vk::CullModeFlags::BACK,
-            front_face: vk::FrontFace::COUNTER_CLOCKWISE,
-            depth_bias_enable: vk::FALSE,
-            depth_bias_constant_factor: 0.0,
-            depth_bias_clamp: 0.0,
-            depth_bias_slope_factor: 0.0,
-            ..Default::default()
-        };
-
-        let multisampling = vk::PipelineMultisampleStateCreateInfo {
-            s_type: StructureType::PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            sample_shading_enable: vk::TRUE, // This may cause performance loss, but it's not required
-            rasterization_samples: msaa_samples,
-            min_sample_shading: 0.2,
-            p_sample_mask: std::ptr::null(),
-            alpha_to_coverage_enable: vk::FALSE,
-            alpha_to_one_enable: vk::FALSE,
-            ..Default::default()
-        };
-
-        let color_blend_attachment = vk::PipelineColorBlendAttachmentState {
-            color_write_mask: vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B | vk::ColorComponentFlags::A,
-            blend_enable: vk::TRUE,
-            src_color_blend_factor: vk::BlendFactor::SRC_ALPHA,
-            dst_color_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-            color_blend_op: vk::BlendOp::ADD,
-            src_alpha_blend_factor: vk::BlendFactor::SRC_ALPHA,
-            dst_alpha_blend_factor: vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
-            alpha_blend_op: vk::BlendOp::ADD,
-        };
-
-        let color_blending = vk::PipelineColorBlendStateCreateInfo {
-            s_type: StructureType::PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            logic_op_enable: vk::FALSE,
-            logic_op: vk::LogicOp::COPY,
-            attachment_count: 1,
-            p_attachments: &color_blend_attachment,
-            blend_constants: [0.0, 0.0, 0.0, 0.0],
-            ..Default::default()
-        };
-
-        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo {
-            s_type: StructureType::PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-            depth_test_enable: vk::TRUE,
-            depth_write_enable: vk::TRUE,
-            depth_compare_op: vk::CompareOp::LESS,
-            depth_bounds_test_enable: vk::FALSE,
-            min_depth_bounds: 0.0,
-            max_depth_bounds: 1.0,
-            stencil_test_enable: vk::FALSE,
-            front: vk::StencilOpState::default(),
-            back: vk::StencilOpState::default(),
-            ..Default::default()
-        };
-
-        let pipeline_info = vk::GraphicsPipelineCreateInfo {
-            s_type: StructureType::GRAPHICS_PIPELINE_CREATE_INFO,
-            stage_count: shader_stages.len() as u32,
-            p_stages: shader_stages.as_ptr(),
-            p_vertex_input_state: &vertex_input_info,
-            p_input_assembly_state: &input_assembly,
-            p_viewport_state: &viewport_state,
-            p_rasterization_state: &rasterizer,
-            p_multisample_state: &multisampling,
-            p_depth_stencil_state: &depth_stencil,
-            p_color_blend_state: &color_blending,
-            p_dynamic_state: &dynamic_state,
-            layout: *pipeline_layout,
-            render_pass: *render_pass,
-            subpass: 0,
-            base_pipeline_handle: vk::Pipeline::null(),
-            base_pipeline_index: -1,
-            ..Default::default()
-        };
-
-        let graphics_pipeline = unsafe {
-            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()[0];
-
-        // This should always happen at the end
-        unsafe {
-            device.destroy_shader_module(vert_shader_module, Some(&allocator.get_allocation_callbacks()));
-            device.destroy_shader_module(frag_shader_module, Some(&allocator.get_allocation_callbacks()));
-        }
-
-        graphics_pipeline
-    }
-
-    fn compile_shader(path: &str, shader_kind: ShaderKind, identifier: &str) -> Vec<u32> {
-        let compiler = Compiler::new().unwrap();
-        let artifact = compiler.compile_into_spirv(&read_to_string(path).unwrap(), shader_kind, identifier, "main", None).unwrap();
-        artifact.as_binary().to_owned()
-    }
-
-    fn create_shader_module(device: &Device, code: Vec<u32>, allocator: &mut VkAllocator) -> vk::ShaderModule {
-        let create_info = vk::ShaderModuleCreateInfo {
-            s_type: StructureType::SHADER_MODULE_CREATE_INFO,
-            code_size: code.len() * std::mem::size_of::<u32>(),
-            p_code: code.as_ptr(),
-            ..Default::default()
-        };
-
-        unsafe {
-            device.create_shader_module(&create_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
-    }
-
-    fn create_pipeline_layout(device: &Device, desciptor_set_layout: &vk::DescriptorSetLayout, allocator: &mut VkAllocator) -> vk::PipelineLayout {
-        let descriptor_set_layouts = [*desciptor_set_layout];
-        let pipeline_layout_create_info = vk::PipelineLayoutCreateInfo {
-            s_type: StructureType::PIPELINE_LAYOUT_CREATE_INFO,
-            set_layout_count: 1,
-            p_set_layouts: descriptor_set_layouts.as_ptr(),
-            push_constant_range_count: 0,
-            p_push_constant_ranges: std::ptr::null(),
-            ..Default::default()
-        };
-
-        unsafe {
-            device.create_pipeline_layout(&pipeline_layout_create_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
-    }
-
-    fn create_render_pass(swapchain_image_format: vk::Format, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> vk::RenderPass {
-        let color_attachment = vk::AttachmentDescription {
-            format: swapchain_image_format,
-            samples: msaa_samples,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::STORE,
-            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-            initial_layout: vk::ImageLayout::UNDEFINED,
-            final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            ..Default::default()
-        };
-
-        let color_attachment_ref = vk::AttachmentReference {
-            attachment: 0,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        };
-
-        let depth_attachment = vk::AttachmentDescription {
-            format: Self::find_depth_format(instance, physical_device),
-            samples: msaa_samples,
-            load_op: vk::AttachmentLoadOp::CLEAR,
-            store_op: vk::AttachmentStoreOp::DONT_CARE,
-            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-            initial_layout: vk::ImageLayout::UNDEFINED,
-            final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            ..Default::default()
-        };
-
-        let depth_attachment_ref = vk::AttachmentReference {
-            attachment: 1,
-            layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-
-        let color_attachment_resolve = vk::AttachmentDescription {
-            format: swapchain_image_format,
-            samples: vk::SampleCountFlags::TYPE_1,
-            load_op: vk::AttachmentLoadOp::DONT_CARE,
-            store_op: vk::AttachmentStoreOp::STORE,
-            stencil_load_op: vk::AttachmentLoadOp::DONT_CARE,
-            stencil_store_op: vk::AttachmentStoreOp::DONT_CARE,
-            initial_layout: vk::ImageLayout::UNDEFINED,
-            final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-            ..Default::default()
-        };
-
-        let color_attachment_resolve_ref = vk::AttachmentReference {
-            attachment: 2,
-            layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        };
-
-        let subpass = vk::SubpassDescription {
-            pipeline_bind_point: vk::PipelineBindPoint::GRAPHICS,
-            color_attachment_count: 1,
-            p_color_attachments: &color_attachment_ref,
-            p_depth_stencil_attachment: &depth_attachment_ref,
-            p_resolve_attachments: &color_attachment_resolve_ref,
-            ..Default::default()
-        };
-
-        let dependency = vk::SubpassDependency {
-            src_subpass: vk::SUBPASS_EXTERNAL,
-            dst_subpass: 0,
-            src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            src_access_mask: vk::AccessFlags::empty(),
-            dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            ..Default::default()
-        };
-
-        let attachments = [color_attachment, depth_attachment, color_attachment_resolve];
-        let render_pass_info = vk::RenderPassCreateInfo {
-            s_type: StructureType::RENDER_PASS_CREATE_INFO,
-            attachment_count: attachments.len() as u32,
-            p_attachments: attachments.as_ptr(),
-            subpass_count: 1,
-            p_subpasses: &subpass,
-            dependency_count: 1,
-            p_dependencies: &dependency,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.create_render_pass(&render_pass_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
-    }
-
     fn get_viewport(swapchain_extent: &vk::Extent2D) -> vk::Viewport {
         vk::Viewport {
             x: 0.0,
@@ -1043,7 +684,7 @@ impl VkController {
         }
     }
 
-    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_allocations: &Vec<ImageView>, swapchain_extent: &vk::Extent2D, depth_image_view: &AllocationInfo, color_image_view: &AllocationInfo, allocator: &mut VkAllocator) -> Vec<vk::Framebuffer> {
+    fn create_framebuffers(device: &Device, render_pass: &vk::RenderPass, swapchain_image_allocations: &[ImageView], swapchain_extent: &vk::Extent2D, depth_image_view: &AllocationInfo, color_image_view: &AllocationInfo, allocator: &mut VkAllocator) -> Vec<vk::Framebuffer> {
         let mut swapchain_framebuffers = Vec::with_capacity(swapchain_image_allocations.len());
 
         for swapchain_image_view in swapchain_image_allocations.iter() {
@@ -1082,13 +723,12 @@ impl VkController {
         }.unwrap()
     }
 
-    fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool) -> Vec<vk::CommandBuffer> {
-
+    fn create_command_buffers(device: &Device, command_pool: &vk::CommandPool, num_buffers: u32) -> Vec<vk::CommandBuffer> {
         let alloc_info = vk::CommandBufferAllocateInfo {
             s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
             command_pool: *command_pool,
             level: vk::CommandBufferLevel::PRIMARY,
-            command_buffer_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            command_buffer_count: num_buffers, //Self::MAX_FRAMES_IN_FLIGHT as u32,
             ..Default::default()
         };
 
@@ -1097,7 +737,7 @@ impl VkController {
         }.unwrap()
     }
 
-    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, graphics_pipeline: &vk::Pipeline, vertex_allocation: &AllocationInfo, index_allocation: &AllocationInfo, pipeline_layout: &vk::PipelineLayout, descriptor_sets: &Vec<vk::DescriptorSet>, current_frame: usize, indices: &[u32]) {
+    fn record_command_buffer(device: &Device, command_buffer: &vk::CommandBuffer, swapchain_framebuffers: &[vk::Framebuffer], render_pass: &vk::RenderPass, image_index: usize, swapchain_extent: &vk::Extent2D, object_manager: &ObjectManager, pipeline_manager: &mut PipelineManager, current_frame: usize, allocator: &mut VkAllocator) {
         let begin_info = vk::CommandBufferBeginInfo {
             s_type: StructureType::COMMAND_BUFFER_BEGIN_INFO,
             p_inheritance_info: std::ptr::null(),
@@ -1141,31 +781,42 @@ impl VkController {
         let viewport = Self::get_viewport(swapchain_extent);
         let scissor = Self::get_scissor(swapchain_extent);
 
-        let vertex_buffers = [vertex_allocation.get_buffer().unwrap()];
         let offsets = [0_u64];
 
         unsafe {
             device.cmd_begin_render_pass(*command_buffer, &render_pass_info, vk::SubpassContents::INLINE);
-            device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *graphics_pipeline);
-            device.cmd_set_viewport(*command_buffer, 0, &[viewport]);
-            device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
-            device.cmd_bind_vertex_buffers(*command_buffer, 0, &vertex_buffers, &offsets);
-            device.cmd_bind_index_buffer(*command_buffer, index_allocation.get_buffer().unwrap(), 0, vk::IndexType::UINT32);
-            device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, *pipeline_layout, 0, &vec![descriptor_sets[current_frame]], &vec![]);
-            device.cmd_draw_indexed(*command_buffer, indices.len() as u32, 1, 0, 0, 0);
+            object_manager.borrow_objects_to_render().iter().for_each(|(p_c_k, data_using_p_c)| {
+                let mut p_c = p_c_k.clone();
+                let pipeline = pipeline_manager.get_or_create_pipeline(&mut p_c, device, swapchain_extent, allocator).unwrap();
+                data_using_p_c.object_type_num_instances.iter().for_each(|(object_type, (num_instances, num_indices))| {
+                    device.cmd_bind_pipeline(*command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                    device.cmd_set_viewport(*command_buffer, 0, &[viewport]);
+                    device.cmd_set_scissor(*command_buffer, 0, &[scissor]);
+                    device.cmd_bind_vertex_buffers(*command_buffer, 0, &[data_using_p_c.vertices.0.get_buffer().unwrap()], &offsets);
+                    device.cmd_bind_index_buffer(*command_buffer, data_using_p_c.indices.0.get_buffer().unwrap(), data_using_p_c.object_type_indices_bytes_indices.get(object_type).unwrap().0.0 as u64, vk::IndexType::UINT32);
+                    device.cmd_bind_descriptor_sets(*command_buffer, vk::PipelineBindPoint::GRAPHICS, p_c.get_pipeline_layout().unwrap(), 0, &[data_using_p_c.descriptor_sets.get(object_type).unwrap()[current_frame]], &[]);
+                    device.cmd_draw_indexed(*command_buffer, num_indices.0 as u32, num_instances.0 as u32, 0, 0, 0);
+                });
+            });
             device.cmd_end_render_pass(*command_buffer);
             device.end_command_buffer(*command_buffer)
         }.unwrap();
     }
 
-    pub fn draw_frame(&mut self) {
+    pub fn try_to_draw_frame(&mut self) -> bool {
+        self.draw_frame(0)
+    }
 
+    fn draw_frame(&mut self, timeout: u64) -> bool {
         if self.is_minimized && !self.frame_buffer_resized {
-            return;
+            return false;
         }
 
         unsafe {
-            self.device.wait_for_fences(&[self.in_flight_fences[self.current_frame]], true, u64::MAX).unwrap();
+            match self.device.wait_for_fences(&[self.in_flight_fences[self.current_frame]], true, timeout) {
+                Ok(_) => (),
+                Err(_) => return false,
+            };
         }
 
         let image_index = match unsafe {
@@ -1175,36 +826,31 @@ impl VkController {
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 self.frame_buffer_resized = false;
                 self.recreate_swapchain();
-                return;
+                return false;
             },
             Err(error) => panic!("Failed to acquire next image: {:?}", error),
         };
-
-        self.update_uniform_buffer(self.current_frame);
-
+        
         unsafe {
             self.device.reset_fences(&[self.in_flight_fences[self.current_frame]]).unwrap();
         }
 
-        unsafe {
-            self.device.reset_command_buffer(self.command_buffers[self.current_frame], vk::CommandBufferResetFlags::empty()).unwrap();
-        }
+        let cmd_buffer = self.command_buffers[self.current_frame][0];
 
-        Self::record_command_buffer(&self.device, &self.command_buffers[self.current_frame], &self.swapchain_framebuffers, &self.render_pass, image_index as usize, &self.swapchain_extent, &self.graphics_pipeline, self.vertex_allocation.as_ref().unwrap(), self.index_allocation.as_ref().unwrap(), &self.pipeline_layout, &self.descriptor_sets, self.current_frame, &self.indices);
+        self.object_manager.update_objects(&self.device, &self.descriptor_pool, self.current_frame, &mut self.allocator);
+        Self::record_command_buffer(&self.device, &cmd_buffer, &self.swapchain_framebuffers, &self.graphics_pipeline_manager.get_render_pass().unwrap(), image_index as usize, &self.swapchain_extent, &self.object_manager, &mut self.graphics_pipeline_manager, self.current_frame, &mut self.allocator);
 
         let wait_semaphores = [self.image_available_semaphores[self.current_frame]];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = [self.render_finished_semaphores[self.current_frame]];
-
-        let command_buffers = [self.command_buffers[self.current_frame]];
 
         let submit_info = vk::SubmitInfo {
             s_type: StructureType::SUBMIT_INFO,
             wait_semaphore_count: wait_semaphores.len() as u32,
             p_wait_semaphores: wait_semaphores.as_ptr(),
             p_wait_dst_stage_mask: wait_stages.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: command_buffers.as_ptr(),
+            command_buffer_count: self.command_buffers[self.current_frame].len() as u32,
+            p_command_buffers: self.command_buffers[self.current_frame].as_ptr(),
             signal_semaphore_count: 1,
             p_signal_semaphores: signal_semaphores.as_ptr(),
             ..Default::default()
@@ -1213,6 +859,7 @@ impl VkController {
         unsafe {
             self.device.queue_submit(self.graphics_queue, &[submit_info], self.in_flight_fences[self.current_frame]).unwrap();
         }
+
 
         let swapchains = [self.swapchain];
 
@@ -1243,6 +890,8 @@ impl VkController {
         }
 
         self.current_frame = (self.current_frame + 1) % Self::MAX_FRAMES_IN_FLIGHT;
+
+        true
     }
 }
 
@@ -1281,161 +930,10 @@ impl VkController {
 
         (image_available_semaphores, render_finished_semaphores, in_flight_fences)
     }
-
-    fn begin_single_time_command(device: &Device, command_pool: &vk::CommandPool) -> vk::CommandBuffer {
-        let alloc_info = vk::CommandBufferAllocateInfo {
-            s_type: StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
-            level: vk::CommandBufferLevel::PRIMARY,
-            command_pool: *command_pool,
-            command_buffer_count: 1,
-            ..Default::default()
-        };
-
-        let command_buffer = unsafe {
-            device.allocate_command_buffers(&alloc_info).unwrap()[0]
-        };
-
-        let begin_info = vk::CommandBufferBeginInfo {
-            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
-            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.begin_command_buffer(command_buffer, &begin_info).unwrap();
-        }
-
-        command_buffer
-    }
-
-    fn end_single_time_command(device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, command_buffer: vk::CommandBuffer) {
-        unsafe {
-            device.end_command_buffer(command_buffer).unwrap();
-        }
-
-        let submit_info = vk::SubmitInfo {
-            s_type: vk::StructureType::SUBMIT_INFO,
-            command_buffer_count: 1,
-            p_command_buffers: &command_buffer,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.queue_submit(*graphics_queue, &[submit_info], vk::Fence::null()).unwrap();
-            device.queue_wait_idle(*graphics_queue).unwrap();
-            device.free_command_buffers(*command_pool, &[command_buffer]);
-        }
-    }
-
-    fn copy_buffer(src_buffer: &vk::Buffer, dst_buffer: &vk::Buffer, size: vk::DeviceSize, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
-        let command_buffer = Self::begin_single_time_command(device, command_pool);
-
-        let copy_region = vk::BufferCopy {
-            size,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.cmd_copy_buffer(command_buffer, *src_buffer, *dst_buffer, &[copy_region]);
-        }
-
-        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
-    }
-
-    fn copy_buffer_to_image(src_buffer: &vk::Buffer, dst_image: &vk::Image, width: u32, height: u32, device: &Device, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue) {
-        let command_buffer = Self::begin_single_time_command(device, command_pool);
-
-        let region = vk::BufferImageCopy {
-            buffer_offset: 0,
-            buffer_row_length: 0,
-            buffer_image_height: 0,
-            image_subresource: vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
-            image_offset: vk::Offset3D {
-                x: 0,
-                y: 0,
-                z: 0,
-            },
-            image_extent: vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            },
-        };
-
-        unsafe {
-            device.cmd_copy_buffer_to_image(command_buffer, *src_buffer, *dst_image, vk::ImageLayout::TRANSFER_DST_OPTIMAL, &[region]);
-        }
-
-        Self::end_single_time_command(device, command_pool, graphics_queue, command_buffer);
-    }
 }
 
 // Resource management
 impl VkController {
-    fn create_vertex_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, vertices: &[Vertex], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, vertices, vk::BufferUsageFlags::VERTEX_BUFFER, false).unwrap()
-    }
-
-    fn create_index_buffer(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, indices: &[u32], allocator: &mut VkAllocator) -> AllocationInfo {
-        allocator.create_device_local_buffer(command_pool, graphics_queue, indices, vk::BufferUsageFlags::INDEX_BUFFER, false).unwrap()
-    }
-
-    fn create_uniform_buffers(uniform_buffer_size: usize, allocator: &mut VkAllocator) -> AllocationInfo {
-        //let buffer_size = std::mem::size_of::<UniformBufferObject>();
-
-        allocator.create_uniform_buffers(uniform_buffer_size, Self::MAX_FRAMES_IN_FLIGHT).unwrap()
-    }
-
-    fn update_uniform_buffer(&mut self, current_image: usize) {
-        // let elapsed = self.start_time.elapsed().as_secs_f32();
-        // let mut ubo = UniformBufferObject {
-        //     model: glm::rotate(&glm::identity(), elapsed * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 0.0, 1.0)),
-        //     view: glm::look_at(&glm::vec3(2.0, 2.0, 2.0), &glm::vec3(0.0, 0.0, 0.0), &glm::vec3(0.0, 0.0, 1.0)),
-        //     proj: glm::perspective(self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32, 90.0_f32.to_radians(), 0.1, 10.0),
-        // };
-        // ubo.proj[(1, 1)] *= -1.0;
-
-        unsafe {
-            std::ptr::copy_nonoverlapping(&ubo as *const UniformBufferObject as *const std::ffi::c_void, self.uniform_allocation.as_ref().unwrap().get_uniform_pointers()[current_image], std::mem::size_of::<UniformBufferObject>());
-        }
-    }
-
-    fn create_descriptor_set_layout(device: &Device, layout_bindings: &[vk::DescriptorSetLayoutBinding], allocator: &mut VkAllocator) -> vk::DescriptorSetLayout {
-        // let ubo_layout_binding = vk::DescriptorSetLayoutBinding {
-        //     binding: 0,
-        //     descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-        //     descriptor_count: 1,
-        //     stage_flags: vk::ShaderStageFlags::VERTEX,
-        //     p_immutable_samplers: std::ptr::null(),
-        // };
-
-        // let sampler_layout_binding = vk::DescriptorSetLayoutBinding {
-        //     binding: 1,
-        //     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-        //     descriptor_count: 1,
-        //     stage_flags: vk::ShaderStageFlags::FRAGMENT,
-        //     p_immutable_samplers: std::ptr::null(),
-        // };
-
-        // let layout_bindings = [ubo_layout_binding, sampler_layout_binding];
-
-        let layout_info = vk::DescriptorSetLayoutCreateInfo {
-            s_type: StructureType::DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            binding_count: layout_bindings.len() as u32,
-            p_bindings: layout_bindings.as_ptr(),
-            ..Default::default()
-        };
-
-        unsafe {
-            device.create_descriptor_set_layout(&layout_info, Some(&allocator.get_allocation_callbacks()))
-        }.unwrap()
-    }
-
     fn create_descriptor_pool(device: &Device, allocator: &mut VkAllocator) -> vk::DescriptorPool {
         let pool_sizes = [
             vk::DescriptorPoolSize {
@@ -1443,123 +941,27 @@ impl VkController {
                 descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
             },
             vk::DescriptorPoolSize {
+                ty: vk::DescriptorType::STORAGE_BUFFER,
+                descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            },
+            vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 descriptor_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
-            }
+            },
         ];
 
         let pool_info = vk::DescriptorPoolCreateInfo {
             s_type: StructureType::DESCRIPTOR_POOL_CREATE_INFO,
             pool_size_count: pool_sizes.len() as u32,
             p_pool_sizes: pool_sizes.as_ptr(),
-            max_sets: Self::MAX_FRAMES_IN_FLIGHT as u32,
+            max_sets: Self::MAX_FRAMES_IN_FLIGHT as u32 * Self::MAX_OBJECT_TYPES as u32,
+            flags: vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
             ..Default::default()
         };
 
         unsafe {
             device.create_descriptor_pool(&pool_info, Some(&allocator.get_allocation_callbacks()))
         }.unwrap()
-    }
-
-    fn create_descriptor_sets(device: &Device, descriptor_pool: &vk::DescriptorPool, uniform_buffer: &AllocationInfo, descriptor_set_layout: &vk::DescriptorSetLayout, texture_allocation: &AllocationInfo, texture_sampler: &vk::Sampler) -> Vec<vk::DescriptorSet> {
-        let layouts = [*descriptor_set_layout; Self::MAX_FRAMES_IN_FLIGHT];
-        let alloc_info = vk::DescriptorSetAllocateInfo {
-            s_type: vk::StructureType::DESCRIPTOR_SET_ALLOCATE_INFO,
-            descriptor_pool: *descriptor_pool,
-            descriptor_set_count: Self::MAX_FRAMES_IN_FLIGHT as u32,
-            p_set_layouts: layouts.as_ptr(),
-            ..Default::default()
-        };
-
-        let descriptor_sets = unsafe {
-            device.allocate_descriptor_sets(&alloc_info).unwrap()
-        };
-
-        for i in 0..Self::MAX_FRAMES_IN_FLIGHT {
-            let offset = unsafe {uniform_buffer.get_uniform_pointers()[i].offset_from(uniform_buffer.get_uniform_pointers()[0])} as u64;
-            let buffer_info = vk::DescriptorBufferInfo {
-                buffer: uniform_buffer.get_buffer().unwrap(),
-                offset,
-                range: std::mem::size_of::<UniformBufferObject>() as u64,
-            };
-
-            let image_info = vk::DescriptorImageInfo {
-                sampler: *texture_sampler,
-                image_view: texture_allocation.get_image_view().unwrap(),
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            };
-
-            let descriptor_writes = [
-                vk::WriteDescriptorSet {
-                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                    dst_set: descriptor_sets[i],
-                    dst_binding: 0,
-                    dst_array_element: 0,
-                    descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                    descriptor_count: 1,
-                    p_buffer_info: &buffer_info,
-                    p_image_info: std::ptr::null(),
-                    p_texel_buffer_view: std::ptr::null(),
-                    ..Default::default()
-                },
-                vk::WriteDescriptorSet {
-                    s_type: vk::StructureType::WRITE_DESCRIPTOR_SET,
-                    dst_set: descriptor_sets[i],
-                    dst_binding: 1,
-                    dst_array_element: 0,
-                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    descriptor_count: 1,
-                    p_image_info: &image_info,
-                    p_texel_buffer_view: std::ptr::null(),
-                    ..Default::default()
-                }
-            ];
-
-            unsafe {
-                device.update_descriptor_sets(&descriptor_writes, &vec![]);
-            }
-        }
-
-        descriptor_sets
-    }
-
-    fn create_texture_image(command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, allocator: &mut VkAllocator) -> (AllocationInfo, u32) {
-        //let binding = image::open("./assets/images/viking_room.png").unwrap();
-
-        allocator.create_device_local_image(binding, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false).unwrap()
-    }
-
-    fn create_texture_image_view(image_allocation: &mut AllocationInfo, mip_levels: u32, allocator: &mut VkAllocator) {
-        allocator.create_image_view(image_allocation, vk::Format::R8G8B8A8_SRGB, vk::ImageAspectFlags::COLOR, mip_levels).unwrap();
-    }
-
-    fn create_texture_sampler(device: &Device, instance: &Instance, physical_device: &PhysicalDevice, mip_levels: u32, allocator: &mut VkAllocator) -> vk::Sampler {
-        let max_anisotropy = unsafe {
-            instance.get_physical_device_properties(*physical_device).limits.max_sampler_anisotropy
-        };
-        let sampler_info = vk::SamplerCreateInfo {
-            s_type: StructureType::SAMPLER_CREATE_INFO,
-            mag_filter: vk::Filter::LINEAR,
-            min_filter: vk::Filter::LINEAR,
-            address_mode_u: vk::SamplerAddressMode::REPEAT,
-            address_mode_v: vk::SamplerAddressMode::REPEAT,
-            address_mode_w: vk::SamplerAddressMode::REPEAT,
-            anisotropy_enable: vk::TRUE,
-            max_anisotropy,
-            border_color: vk::BorderColor::INT_OPAQUE_BLACK,
-            unnormalized_coordinates: vk::FALSE,
-            compare_enable: vk::FALSE,
-            compare_op: vk::CompareOp::ALWAYS,
-            mipmap_mode: vk::SamplerMipmapMode::LINEAR,
-            mip_lod_bias: 0.0,
-            min_lod: 0.0,
-            max_lod: mip_levels as f32,
-            ..Default::default()
-        };
-
-        unsafe {
-            device.create_sampler(&sampler_info, Some(&allocator.get_allocation_callbacks())).unwrap()
-        }
     }
 
     fn create_depth_resources(instance: &Instance, physical_device: &PhysicalDevice, swapchain_extent: &vk::Extent2D, msaa_samples: vk::SampleCountFlags, allocator: &mut VkAllocator) -> AllocationInfo {
@@ -1587,10 +989,6 @@ impl VkController {
 
     fn find_depth_format(instance: &Instance, physical_device: &PhysicalDevice) -> vk::Format {
         Self::find_supported_formats(instance, physical_device, &[vk::Format::D32_SFLOAT, vk::Format::D32_SFLOAT_S8_UINT, vk::Format::D24_UNORM_S8_UINT], vk::ImageTiling::OPTIMAL, vk::FormatFeatureFlags::DEPTH_STENCIL_ATTACHMENT).unwrap()
-    }
-
-    fn has_stencil_component(format: vk::Format) -> bool {
-        format == vk::Format::D32_SFLOAT_S8_UINT || format == vk::Format::D24_UNORM_S8_UINT
     }
 
     fn get_max_usable_sample_count(instance: &Instance, physical_device: &PhysicalDevice) -> vk::SampleCountFlags {
@@ -1624,48 +1022,14 @@ impl VkController {
 
         color_allocation
     }
-
-    fn load_model(path: &str) -> (Vec<Vertex>, Vec<u32>) {
-        let (models, _) = tobj::load_obj(path, &tobj::LoadOptions::default()).unwrap();
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-        let mut unique_vertices: HashMap<Vertex, u32> = HashMap::new();
-
-        for model in models {
-            let mesh = model.mesh;
-            for i in 0..mesh.indices.len() {
-                let index = mesh.indices[i] as usize;
-                let vertex = Vertex {
-                    position: glm::vec3(mesh.positions[index * 3], mesh.positions[index * 3 + 1], mesh.positions[index * 3 + 2]),
-                    color: glm::vec3(1.0, 1.0, 1.0),
-                    tex_coord: glm::vec2(mesh.texcoords[index * 2], 1.0 - mesh.texcoords[index * 2 + 1]),
-                };
-        
-                if let hash_map::Entry::Vacant(e) = unique_vertices.entry(vertex) {
-                    e.insert(vertices.len() as u32);
-                    vertices.push(vertex);
-                }
-                indices.push(*unique_vertices.get(&vertex).unwrap());
-            }
-        }
-
-        // vertices = TEST_RECTANGLE.to_vec();
-        // indices = TEST_RECTANGLE_INDICES.to_vec();
-
-        (vertices, indices)
+    
+    pub fn get_swapchain_extent(&self) -> vk::Extent2D {
+        self.swapchain_extent
     }
 
-    fn find_memory_type(instance: &Instance, physical_device: &PhysicalDevice, type_filter: u32, properties: vk::MemoryPropertyFlags) -> Result<u32, Cow<'static, str>> {
-        let mem_properties = unsafe {
-            instance.get_physical_device_memory_properties(*physical_device)
-        };
-
-        for (i, mem_type) in mem_properties.memory_types.iter().enumerate() {
-            if type_filter & (1 << i) != 0 && mem_type.property_flags.contains(properties) {
-                return Ok(i as u32);
-            }
-        }
-        Err(Cow::from("Failed to find suitable memory type!"))
+    // The object will not be remove until the all frames in flight have passed
+    pub fn remove_objects_to_render(&mut self, object_ids: Vec<ObjectID>) -> Result<(), Cow<'static, str>> {
+        self.object_manager.remove_objects(object_ids, &self.command_pool, &self.graphics_queue, self.current_frame, &mut self.allocator)
     }
 }
 
@@ -1719,5 +1083,30 @@ impl VkController {
         }
 
         vk::FALSE
+    }
+}
+
+
+pub trait VkControllerGraphicsObjectsControl<T: Vertex + Clone> {
+    fn add_objects_to_render(&mut self, original_objects: Vec<Arc<RwLock<dyn GraphicsObject<T>>>>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>>;
+}
+
+impl<T: Vertex + Clone + 'static> VkControllerGraphicsObjectsControl<T> for VkController {
+    fn add_objects_to_render(&mut self, original_objects: Vec<Arc<RwLock<dyn GraphicsObject<T>>>>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>> {
+        let object_ids = self.object_manager.generate_currently_unused_ids(original_objects.len())?;
+        let mut object_id_to_object = Vec::with_capacity(original_objects.len());
+        let mut objects_to_render = Vec::with_capacity(original_objects.len());
+        let mut i = 0;
+        for object in original_objects {
+            let object_id = object_ids[i];
+            let object_to_render = Box::new(object.clone());
+            objects_to_render.push((object_id, object_to_render as Box<dyn Renderable>));
+            object_id_to_object.push((object_id, object.clone()));
+            i += 1;
+        }
+        dbg!("Adding objects to object manager!");
+        self.object_manager.add_objects(objects_to_render, &self.device, &self.instance, &self.physical_device, &self.command_pool, &self.descriptor_pool, &self.graphics_queue, &mut self.sampler_manager, self.msaa_samples, self.swapchain_image_format, Self::find_depth_format(&self.instance, &self.physical_device), &self.swapchain_extent, self.current_frame, &mut self.graphics_pipeline_manager, &mut self.allocator)?;
+        dbg!("Objects added to object manager!");
+        Ok(object_id_to_object)
     }
 }

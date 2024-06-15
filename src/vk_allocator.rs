@@ -8,15 +8,15 @@ type MemoryOffset = vk::DeviceSize;
 type MemorySizeRange = (vk::DeviceSize, vk::DeviceSize);
 type Alignment = usize;
 
-pub trait Serializable { // where Self: Sized
+pub trait Serializable {
     fn to_u8(&self) -> Vec<u8>;
-    fn byte_size(&self) -> usize;
 }
 
 #[derive(Debug, Clone)]
 pub struct AllocationInfo {
     buffer: Option<vk::Buffer>,
     image: Option<vk::Image>,
+    mip_levels: Option<u32>,
     image_view: Option<vk::ImageView>,
     memory_index: MemoryTypeIndex,
     memory_start: MemoryOffset,
@@ -64,19 +64,43 @@ impl VkAllocator {
     }
 
     pub fn create_uniform_buffers(&mut self, buffer_size: usize, num_buffers: usize) -> Result<AllocationInfo, Cow<'static, str>> {
-        let buffer_size = (buffer_size * num_buffers) as u64;
+        let total_buffer_size = (buffer_size * num_buffers) as u64;
 
         // let mut uniform_buffers = Vec::with_capacity(num_buffers);
         
-        let mut allocation_info = self.create_buffer(buffer_size, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, true)?; //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        let mut allocation_info = self.create_buffer(total_buffer_size, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, true)?; //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        // println!("Device: {:?}, memory start (inclusive): {}, memory end (exclusive): {}, type: {}", allocation_info.memory, allocation_info.memory_start, allocation_info.memory_end, allocation_info.memory_index);
         let data_ptr = unsafe {
-            self.device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), buffer_size, vk::MemoryMapFlags::empty()).unwrap()
+            self.device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), total_buffer_size, vk::MemoryMapFlags::empty()).unwrap()
         };
         for i in 0..num_buffers {
-            let offset = match (i*buffer_size as usize/num_buffers).try_into() {
+            let offset = match (i*buffer_size).try_into() {
                 Ok(offset) => offset,
                 Err(err) => return Err(Cow::from(format!("Failed to create uniform buffers because: {}", err))),
             };
+            // println!("Total size: {}, single size: {}, offset: {}, num_buffer: {}", total_buffer_size, buffer_size, offset, num_buffers);
+            allocation_info.uniform_pointers.push(unsafe {data_ptr.offset(offset)});
+        }
+
+        Ok(allocation_info)
+    }
+
+    pub fn create_storage_buffers(&mut self, buffer_size: usize, num_buffers: usize) -> Result<AllocationInfo, Cow<'static, str>> {
+        let total_buffer_size = (buffer_size * num_buffers) as u64;
+
+        // let mut uniform_buffers = Vec::with_capacity(num_buffers);
+        
+        let mut allocation_info = self.create_buffer(total_buffer_size, vk::BufferUsageFlags::STORAGE_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, true)?; //Self::create_buffer(instance, physical_device, device, buffer_size as u64, vk::BufferUsageFlags::UNIFORM_BUFFER, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, allocator);
+        // println!("Device: {:?}, memory start (inclusive): {}, memory end (exclusive): {}, type: {}", allocation_info.memory, allocation_info.memory_start, allocation_info.memory_end, allocation_info.memory_index);
+        let data_ptr = unsafe {
+            self.device.map_memory(allocation_info.get_memory(), allocation_info.get_memory_start(), total_buffer_size, vk::MemoryMapFlags::empty()).unwrap()
+        };
+        for i in 0..num_buffers {
+            let offset = match (i*buffer_size).try_into() {
+                Ok(offset) => offset,
+                Err(err) => return Err(Cow::from(format!("Failed to create uniform buffers because: {}", err))),
+            };
+            // println!("Total size: {}, single size: {}, offset: {}, num_buffer: {}", total_buffer_size, buffer_size, offset, num_buffers);
             allocation_info.uniform_pointers.push(unsafe {data_ptr.offset(offset)});
         }
 
@@ -98,7 +122,7 @@ impl VkAllocator {
                 Err(err) => return Err(Cow::from(format!("Failed to create buffer when creating buffer because: {}", err))),
             }
         };
-        
+
         let memory_requirements = unsafe {
             self.device.get_buffer_memory_requirements(buffer)
         };
@@ -127,9 +151,9 @@ impl VkAllocator {
         Ok(allocation_info)
     }
 
-    pub fn create_device_local_buffer<T: Serializable>(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, to_serialize: &[T], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
-        let data_vec = Self::slice_of_serializable_to_u8(to_serialize);
-        let data = data_vec.as_slice();
+    pub fn create_device_local_buffer(&mut self, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, data: &[u8], buffer_usage: vk::BufferUsageFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+        // let data_vec = Self::serializable_vec_to_u8_vec(to_serialize);
+        // let data = data_vec.as_slice();
 
         let size = std::mem::size_of_val(data);
 
@@ -149,7 +173,7 @@ impl VkAllocator {
         }
         
         let device_local_allocation = self.create_buffer(size as u64, buffer_usage | vk::BufferUsageFlags::TRANSFER_DST, vk::MemoryPropertyFlags::DEVICE_LOCAL, force_own_memory_block)?;
-
+        
         self.copy_buffer(&staging_allocation, &device_local_allocation, command_pool, graphics_queue)?;
 
         if self.free_memory_allocation(staging_allocation).is_err() {
@@ -211,7 +235,7 @@ impl VkAllocator {
         Ok(image_allocation)
     }    
 
-    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<(AllocationInfo, u32), Cow<'static, str>> {
+    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         // let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = image.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
@@ -219,7 +243,7 @@ impl VkAllocator {
         let mip_levels = (((image.dimensions().0 as f32).max(image.dimensions().1 as f32).log2().floor() + 1.0) as u32).min(max_mip_levels);
 
         let staging_allocation = self.create_buffer(image_size, vk::BufferUsageFlags::TRANSFER_SRC, vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, force_own_memory_block)?;
-
+        // println!("Memory start (including): {}, memory end (excluding): {}, index: {}, device memory: {:?}, force_own_memory_block: {}, img: {:?}", staging_allocation.memory_start, staging_allocation.memory_end, staging_allocation.memory_index, staging_allocation.memory, force_own_memory_block, image.get_pixel(0, 0));
         unsafe {
             let data_ptr = match self.device.map_memory(staging_allocation.memory, staging_allocation.memory_start, image_size, vk::MemoryMapFlags::empty()) {
                 Ok(ptr) => ptr as *mut u8,
@@ -232,7 +256,7 @@ impl VkAllocator {
             self.device.unmap_memory(staging_allocation.memory);
         };
 
-        let image_allocation = self.create_image( image.dimensions().0, image.dimensions().1, mip_levels, num_samples, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
+        let mut image_allocation = self.create_image( image.dimensions().0, image.dimensions().1, mip_levels, num_samples, vk::Format::R8G8B8A8_SRGB, vk::ImageTiling::OPTIMAL, vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED, vk::MemoryPropertyFlags::DEVICE_LOCAL)?;
 
         match self.transition_image_layout(command_pool, graphics_queue, &image_allocation.image.unwrap(), vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::UNDEFINED, vk::ImageLayout::TRANSFER_DST_OPTIMAL, mip_levels) {
             Ok(_) => {},
@@ -250,17 +274,14 @@ impl VkAllocator {
                 return Err(Cow::from(format!("Failed to copy buffer to image when creating device local image because: {}", err)));
             },
         };
-        //Self::transition_image_layout(device, command_pool, graphics_queue, &vk_image, vk::Format::R8G8B8A8_SRGB, vk::ImageLayout::TRANSFER_DST_OPTIMAL, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL, mip_levels);
         
         self.free_memory_allocation(staging_allocation)?;
-        // unsafe {
-        //     // device.destroy_buffer(staging_buffer, Some(&mut allocator.get_allocation_callbacks()));
-        //     // device.free_memory(staging_buffer_memory, Some(&mut allocator.get_allocation_callbacks()));
-        // }
         
         self.generate_mipmaps(command_pool, graphics_queue, &image_allocation.image.unwrap(), vk::Format::R8G8B8A8_SRGB, image.dimensions().0, image.dimensions().1, mip_levels)?;
         
-        Ok((image_allocation, mip_levels))
+        image_allocation.mip_levels = Some(mip_levels);
+
+        Ok(image_allocation)
     }
 
     pub fn create_image_view(&mut self, allocation_info: &mut AllocationInfo, format: vk::Format, aspect_flags: vk::ImageAspectFlags, mip_levels: u32) -> Result<(), Cow<'static, str>> {
@@ -454,17 +475,6 @@ impl VkAllocator {
                 base_array_layer: 0,
                 layer_count: 1,
             },
-            // src_access_mask: match old_layout { // This could cause issues, see transition barrier masks on https://vulkan-tutorial.com/Texture_mapping/Images
-            //     vk::ImageLayout::UNDEFINED => vk::AccessFlags::empty(),
-            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            //     _ => panic!("Unsupported layout transition!"),
-            // },
-            // dst_access_mask: match new_layout {
-            //     vk::ImageLayout::TRANSFER_DST_OPTIMAL => vk::AccessFlags::TRANSFER_WRITE,
-            //     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL => vk::AccessFlags::SHADER_READ,
-            //     vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL => vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-            //     _ => panic!("Unsupported layout transition!"),
-            // },
             ..Default::default()
         };
 
@@ -479,7 +489,6 @@ impl VkAllocator {
                 barrier.dst_access_mask = vk::AccessFlags::SHADER_READ;
                 (vk::PipelineStageFlags::TRANSFER, vk::PipelineStageFlags::FRAGMENT_SHADER)
             },
-            //(vk::ImageLayout::UNDEFINED, vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL) => (vk::PipelineStageFlags::TOP_OF_PIPE, vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS),
             _ => panic!("Unsupported layout transition! {} {}", old_layout.as_raw(), new_layout.as_raw()),
         };
 
@@ -507,7 +516,7 @@ impl VkAllocator {
 
                 let mut i = 0;
                 while i < free_ranges.len() - 1 {
-                    if free_ranges[i].1 == free_ranges[i + 1].0 - 1 {
+                    if free_ranges[i + 1].0 > 0 && free_ranges[i].1 == free_ranges[i + 1].0 - 1 {
                         free_ranges[i].1 = free_ranges[i + 1].1;
                         free_ranges.remove(i + 1);
                     }
@@ -694,14 +703,44 @@ impl VkAllocator {
     }
 
     fn get_allocation(&mut self, memory_type_index: MemoryTypeIndex, size: vk::DeviceSize, alignment: vk::DeviceSize, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+        if force_own_memory_block {
+            return self.create_own_device_memory_block(memory_type_index, size);
+        }
+        
         let mut allocation = self.find_allocation(memory_type_index, size, alignment);
 
         if allocation.is_err() {
-            self.allocate_new_device_memory(memory_type_index, size, force_own_memory_block)?;
+            self.allocate_new_device_memory(memory_type_index, size, false)?;
             allocation = self.find_allocation(memory_type_index, size, alignment);
         }
 
         allocation
+    }
+
+    fn create_own_device_memory_block(&mut self, memory_type_index: u32, size: u64) -> Result<AllocationInfo, Cow<'static, str>> {
+        self.allocate_new_device_memory(memory_type_index, size, true)?;
+
+        if let Some(memories) = self.device_allocations.get_mut(&memory_type_index) {
+            for (memory, free_ranges) in memories.iter_mut() {
+                if free_ranges.len() > 1 || free_ranges.first().unwrap().0 != 0 || free_ranges.first().unwrap().1 != size {
+                    continue;
+                }
+                let allocation = Ok(AllocationInfo {
+                    buffer: None,
+                    image: None,
+                    mip_levels: None,
+                    image_view: None,
+                    memory_index: memory_type_index,
+                    memory_start: free_ranges.first().unwrap().0,
+                    memory_end: free_ranges.first().unwrap().1,
+                    memory: *memory,
+                    uniform_pointers: Vec::new(),
+                });
+                free_ranges.get_mut(0).unwrap().0 = size;
+                return allocation;
+            }
+        }
+        Err("Could not find free own memory block".into())
     }
 
     fn find_allocation(&mut self, memory_type_index: u32, size: u64, alignment: vk::DeviceSize) -> Result<AllocationInfo, Cow<'static, str>> {
@@ -709,17 +748,18 @@ impl VkAllocator {
             for (memory, free_ranges) in memories.iter_mut() {
                 for (start, end) in free_ranges.iter_mut() {
                     let alignment_offset = if *start % alignment == 0 { 0 } else { alignment - (*start % alignment) };
-                    let aligned_start = *start + alignment_offset;
+                    let aligned_start = (*start + alignment_offset).min(*end);
                     if *end - aligned_start >= size {
                         let allocation = Ok(AllocationInfo {
                             memory_index: memory_type_index,
-                            memory_start: aligned_start,
-                            memory_end: aligned_start + size,
+                            memory_start: aligned_start, // Including
+                            memory_end: aligned_start + size, // Excluding
                             buffer: None,
                             image: None,
                             memory: *memory,
                             image_view: None,
                             uniform_pointers: Vec::new(),
+                            mip_levels: None,
                         });
                         *start += size + alignment_offset;
                         return allocation;
@@ -744,15 +784,14 @@ impl VkAllocator {
     }
 
     pub unsafe fn get_allocation_callbacks(&self) -> vk::AllocationCallbacks {
-        let callbacks = vk::AllocationCallbacks {
+        vk::AllocationCallbacks {
             p_user_data: Arc::into_raw(self.host_allocator.clone()) as *mut c_void,
             pfn_allocation: Some(pfn_allocation),
             pfn_reallocation: Some(pfn_reallocation),
             pfn_free: Some(pfn_free),
             pfn_internal_allocation: None,
             pfn_internal_free: None,
-        };
-        callbacks
+        }
     }
 }
 
@@ -780,6 +819,14 @@ impl AllocationInfo {
     pub fn get_uniform_pointers(&self) -> &[*mut c_void] {
         &self.uniform_pointers
     }
+
+    pub fn get_mip_levels(&self) -> Option<u32> {
+        self.mip_levels
+    }
+
+    pub fn get_memory_end(&self) -> vk::DeviceSize {
+        self.memory_end
+    }
 }
 
 // Host memory allocation
@@ -803,7 +850,7 @@ impl VkHostAllocator {
         if let Some(allocations) = self.host_allocations.get_mut(&alignment) {
             for allocation in allocations.iter_mut() {
                 for free_range in allocation.free_allocations.iter_mut() {
-                    if free_range.1 - free_range.0 >= size {
+                    if (free_range.1 + 1) - free_range.0 >= size {
                         let allocation_ptr = unsafe { allocation.start_ptr.add(free_range.0) as *mut c_void};
                         let previous = self.allocated_host_pointers.get(&allocation_ptr);
                         if previous.is_some() {
@@ -840,9 +887,7 @@ impl VkHostAllocator {
             alignment,
             free_allocations: vec![(0, allocated_size - 1)],
         };
-
         self.host_allocations.entry(alignment).or_default().push(allocation);
-
         Ok(())
     }
 
@@ -890,7 +935,7 @@ impl VkHostAllocator {
     }
 
     pub unsafe fn reallocate(&mut self, ptr: *mut c_void, new_size: usize) -> Result<*mut c_void, Cow<'static, str>> {
-        if let Some((alignment, size)) = self.allocated_host_pointers.get(&ptr) {
+        if let Some((alignment, _)) = self.allocated_host_pointers.get(&ptr) {
             let new_ptr = self.allocate_host_memory(new_size, *alignment)?;
             std::ptr::copy_nonoverlapping(ptr, new_ptr, new_size);
             self.free_host_memory(ptr)?;
@@ -963,7 +1008,7 @@ unsafe extern "system" fn pfn_allocation(p_user_data: *mut c_void, size: usize, 
     alloced_ptr
 }
 
-unsafe extern "system" fn pfn_reallocation(p_user_data: *mut c_void, original: *mut c_void, size: usize, alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
+unsafe extern "system" fn pfn_reallocation(p_user_data: *mut c_void, original: *mut c_void, size: usize, _alignment: usize, allocation_scope: SystemAllocationScope) -> *mut c_void {
     let allocator_arc = Arc::from_raw(p_user_data as *mut Mutex<VkHostAllocator>);
     
     let realloc_ptr = {
