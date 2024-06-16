@@ -34,9 +34,9 @@ struct HostAllocationPool {
 }
 
 pub struct VkAllocator {
-    device: Rc<Device>,
+    device: Arc<Device>,
     physical_device: vk::PhysicalDevice,
-    instance: Rc<Instance>,
+    instance: Arc<Instance>,
     device_allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<MemorySizeRange>)>>,
     host_allocator: Arc<Mutex<VkHostAllocator>>,
 }
@@ -50,7 +50,7 @@ pub struct VkHostAllocator {
 impl VkAllocator {
     const DEFAULT_DEVICE_MEMORY_ALLOCATION_BYTE_SIZE: vk::DeviceSize = 256_000_000; // 256 MB 
 
-    pub fn new(instance: Rc<Instance>, physical_device: vk::PhysicalDevice, device: Rc<Device>) -> Self {
+    pub fn new(instance: Arc<Instance>, physical_device: vk::PhysicalDevice, device: Arc<Device>) -> Self {
         Self {
             device,
             physical_device,

@@ -6,8 +6,10 @@ pub mod pipeline_manager;
 mod sampler_manager;
 mod vertex;
 mod vk_allocator;
-pub mod vk_controller;
-pub mod graphics_and_input_controller;
+mod vk_controller;
+pub mod artewald_engine;
+pub mod inputs;
+
 
 pub fn create_new_renderer(window_title: &str, application_name: &str) -> vk_controller::VkController {
     let event_loop = EventLoop::new();

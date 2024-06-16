@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{HashMap, HashSet}, rc::Rc, sync::{Arc, RwLock}};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
 
 use ash::{extensions::{ext::DebugUtils, khr::{Surface, Swapchain}}, vk::{self, DebugUtilsMessengerCreateInfoEXT, DescriptorSetLayoutBinding, DeviceCreateInfo, DeviceQueueCreateInfo, ExtDescriptorIndexingFn, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, Entry, Instance};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -26,10 +26,10 @@ const IS_DEBUG_MODE: bool = false;
 pub struct VkController {
     window: Window,
     entry: Entry,
-    instance: Rc<Instance>,
+    instance: Arc<Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
     physical_device: PhysicalDevice,
-    device: Rc<Device>,
+    device: Arc<Device>,
     graphics_queue: Queue,
     present_queue: Queue,
     surface: SurfaceKHR,
@@ -91,7 +91,7 @@ impl VkController {
         } else {
             None
         };
-        let instance = Rc::new(Self::create_instance(&entry, application_name, &window, debug_messenger_create_info.as_ref()));
+        let instance = Arc::new(Self::create_instance(&entry, application_name, &window, debug_messenger_create_info.as_ref()));
 
         let mut debug_messenger = None;
         if IS_DEBUG_MODE {
@@ -104,7 +104,7 @@ impl VkController {
 
         let queue_families = Self::find_queue_families(&entry, &instance, &physical_device, &surface);
         
-        let device = Rc::new(Self::create_logical_device(&entry, &instance, &physical_device, &surface));
+        let device = Arc::new(Self::create_logical_device(&entry, &instance, &physical_device, &surface));
 
         let mut allocator = VkAllocator::new(instance.clone(), physical_device, device.clone());
 
@@ -1030,6 +1030,10 @@ impl VkController {
     // The object will not be remove until the all frames in flight have passed
     pub fn remove_objects_to_render(&mut self, object_ids: Vec<ObjectID>) -> Result<(), Cow<'static, str>> {
         self.object_manager.remove_objects(object_ids, &self.command_pool, &self.graphics_queue, self.current_frame, &mut self.allocator)
+    }
+
+    pub fn borrow_window(&self) -> &Window {
+        &self.window
     }
 }
 
