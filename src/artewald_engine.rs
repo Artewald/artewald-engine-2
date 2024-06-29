@@ -1,8 +1,8 @@
-use std::sync::{Arc, RwLock, mpsc};
+use std::{borrow::Cow, sync::{mpsc, Arc, RwLock}};
 
 use winit::{event::{Event, WindowEvent}, event_loop::{ControlFlow, EventLoop}, window::WindowBuilder};
 
-use crate::{inputs::{KeyType, KeyboardKeyCodes, MouseScrollDelta, WindowPixelPosition}, vk_controller::VkController};
+use crate::{graphics_objects::GraphicsObject, inputs::{KeyType, KeyboardKeyCodes, MouseScrollDelta, WindowPixelPosition}, pipeline_manager::Vertex, vk_controller::{ObjectID, VkController, VkControllerGraphicsObjectsControl}};
 
 pub type TerminatorSignalSender = mpsc::Sender<()>;
 pub type TerminatorSignalReceiver = mpsc::Receiver<()>;
@@ -243,6 +243,21 @@ impl ArtewaldEngine {
         });
 
         
+    }
+}
+
+pub trait ArtewaldEngineGraphicsObjectsControl<T: Vertex + Clone> {
+    fn add_objects_to_render(&mut self, original_objects: Vec<Arc<RwLock<dyn GraphicsObject<T>>>>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>>;
+    fn remove_objects_from_renderer(&mut self, object_ids: Vec<ObjectID>) -> Result<(), Cow<'static, str>>;
+}
+
+impl<T: Vertex + Clone> ArtewaldEngineGraphicsObjectsControl<T> for ArtewaldEngine {
+    fn add_objects_to_render(&mut self, original_objects: Vec<Arc<RwLock<dyn GraphicsObject<T>>>>) -> Result<Vec<(ObjectID, Arc<RwLock<dyn GraphicsObject<T>>>)>, Cow<'static, str>> {
+        self.vk_controller.add_objects_to_render(original_objects)
+    }
+    
+    fn remove_objects_from_renderer(&mut self, object_ids: Vec<ObjectID>) -> Result<(), Cow<'static, str>> {
+        self.vk_controller.remove_objects_to_render(object_ids)
     }
 }
 
