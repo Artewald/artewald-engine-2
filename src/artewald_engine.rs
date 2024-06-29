@@ -7,19 +7,18 @@ use crate::{inputs::{KeyType, KeyboardKeyCodes, MouseScrollDelta, WindowPixelPos
 pub type TerminatorSignalSender = mpsc::Sender<()>;
 pub type TerminatorSignalReceiver = mpsc::Receiver<()>;
 
-pub struct ArtewaldEngine<F, G, H> where F: Fn(KeyType) + 'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseScrollDelta) + 'static {
+pub struct ArtewaldEngine {
     vk_controller: VkController,
     event_loop: Option<EventLoop<()>>,
     currently_pressed_keys: Vec<KeyType>,
-    on_button_pressed_callback: Option<F>,
-    on_button_released_callback: Option<F>,
-    on_button_held_callback: Option<F>,
-    on_mouse_moved_callback: Option<G>,
-    on_mouse_scrolled_callback: Option<H>,
+    on_button_pressed_callback: Option<Box<dyn Fn(KeyType)>>,
+    on_button_released_callback: Option<Box<dyn Fn(KeyType)>>,
+    on_mouse_moved_callback: Option<Box<dyn Fn(WindowPixelPosition)>>,
+    on_mouse_scrolled_callback: Option<Box<dyn Fn(MouseScrollDelta)>>,
     is_cursor_locked: bool,
 }
 
-impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseScrollDelta) + 'static> ArtewaldEngine<F, G, H> {
+impl ArtewaldEngine {
     pub fn new(window_title: &str, application_name: &str) -> Self {
         let event_loop = EventLoop::new();
         let window = WindowBuilder::new().with_title(window_title).build(&event_loop).unwrap();
@@ -31,18 +30,17 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
             currently_pressed_keys: Vec::new(),
             on_button_pressed_callback: None,
             on_button_released_callback: None,
-            on_button_held_callback: None,
             on_mouse_moved_callback: None,
             on_mouse_scrolled_callback: None,
             is_cursor_locked: false,
         }
     }
 
-    pub fn set_on_key_pressed_callback(&mut self, callback: F) {
+    pub fn set_on_key_pressed_callback(&mut self, callback: Box<dyn Fn(KeyType)>) {
         self.on_button_pressed_callback = Some(callback);
     }
 
-    pub fn take_on_key_pressed_callback(&mut self) -> Option<F> {
+    pub fn take_on_key_pressed_callback(&mut self) -> Option<Box<dyn Fn(KeyType)>> {
         self.on_button_pressed_callback.take()
     }
 
@@ -50,11 +48,11 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
         self.on_button_pressed_callback = None;
     }
 
-    pub fn set_on_key_released_callback(&mut self, callback: F) {
+    pub fn set_on_key_released_callback(&mut self, callback: Box<dyn Fn(KeyType)>) {
         self.on_button_released_callback = Some(callback);
     }
 
-    pub fn take_on_key_released_callback(&mut self) -> Option<F> {
+    pub fn take_on_key_released_callback(&mut self) -> Option<Box<dyn Fn(KeyType)>> {
         self.on_button_released_callback.take()
     }
 
@@ -62,23 +60,11 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
         self.on_button_released_callback = None;
     }
 
-    pub fn set_on_key_held_callback(&mut self, callback: F) {
-        self.on_button_held_callback = Some(callback);
-    }
-
-    pub fn take_on_key_held_callback(&mut self) -> Option<F> {
-        self.on_button_held_callback.take()
-    }
-
-    pub fn remove_on_key_held_callback(&mut self) {
-        self.on_button_held_callback = None;
-    }
-
-    pub fn set_on_mouse_moved_callback(&mut self, callback: G) {
+    pub fn set_on_mouse_moved_callback(&mut self, callback: Box<dyn Fn(WindowPixelPosition)>) {
         self.on_mouse_moved_callback = Some(callback);
     }
 
-    pub fn take_on_mouse_moved_callback(&mut self) -> Option<G> {
+    pub fn take_on_mouse_moved_callback(&mut self) -> Option<Box<dyn Fn(WindowPixelPosition)>> {
         self.on_mouse_moved_callback.take()
     }
 
@@ -86,11 +72,11 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
         self.on_mouse_moved_callback = None;
     }
 
-    pub fn set_on_mouse_scrolled_callback(&mut self, callback: H) {
+    pub fn set_on_mouse_scrolled_callback(&mut self, callback: Box<dyn Fn(MouseScrollDelta)>) {
         self.on_mouse_scrolled_callback = Some(callback);
     }
 
-    pub fn take_on_mouse_scrolled_callback(&mut self) -> Option<H> {
+    pub fn take_on_mouse_scrolled_callback(&mut self) -> Option<Box<dyn Fn(MouseScrollDelta)>> {
         self.on_mouse_scrolled_callback.take()
     }
 
@@ -101,7 +87,6 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
     pub fn remove_all_callbacks(&mut self) {
         self.on_button_pressed_callback = None;
         self.on_button_released_callback = None;
-        self.on_button_held_callback = None;
         self.on_mouse_moved_callback = None;
         self.on_mouse_scrolled_callback = None;
     }
@@ -261,5 +246,5 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
     }
 }
 
-unsafe impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseScrollDelta) + 'static> Send for ArtewaldEngine<F, G, H> {}
-unsafe impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseScrollDelta) + 'static> Sync for ArtewaldEngine<F, G, H> {}
+unsafe impl Send for ArtewaldEngine {}
+unsafe impl Sync for ArtewaldEngine {}
