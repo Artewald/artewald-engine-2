@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock, mpsc};
 
 use winit::{event::{Event, WindowEvent}, event_loop::{ControlFlow, EventLoop}, window::WindowBuilder};
 
-use crate::{inputs::{KeyType, MouseScrollDelta, WindowPixelPosition}, vk_controller::VkController};
+use crate::{inputs::{KeyType, KeyboardKeyCodes, MouseScrollDelta, WindowPixelPosition}, vk_controller::VkController};
 
 pub type TerminatorSignalSender = mpsc::Sender<()>;
 pub type TerminatorSignalReceiver = mpsc::Receiver<()>;
@@ -110,6 +110,38 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
         self.is_cursor_locked = lock;
     }
 
+    fn handle_key_press(&mut self, key: KeyType) {
+        if !self.currently_pressed_keys.contains(&key) {
+            self.currently_pressed_keys.push(key);
+            if let Some(callback) = &self.on_button_pressed_callback {
+                callback(key);
+            }
+        }
+    }
+
+    fn handle_key_release(&mut self, key: KeyType) {
+        self.currently_pressed_keys.retain(|&x| x != key);
+        if let Some(callback) = &self.on_button_released_callback {
+            callback(key);
+        }
+    }
+
+    pub fn borrow_currently_pressed_keys(&self) -> &[KeyType] {
+        &self.currently_pressed_keys
+    }
+
+    fn handle_mouse_move(&mut self, position: WindowPixelPosition) {
+        if let Some(callback) = &self.on_mouse_moved_callback {
+            callback(position);
+        }
+    }
+
+    fn handle_mouse_scroll(&mut self, delta: MouseScrollDelta) {
+        if let Some(callback) = &self.on_mouse_scrolled_callback {
+            callback(delta);
+        }
+    }
+
     pub fn run(controller: Arc<RwLock<Self>>, new_main_function: fn(Arc<RwLock<Self>>, TerminatorSignalSender, TerminatorSignalReceiver)) {
         let event_loop = controller.write().unwrap().event_loop.take().unwrap();
         let mut frame_count = 0;
@@ -140,16 +172,44 @@ impl<F: Fn(KeyType)+'static, G: Fn(WindowPixelPosition) + 'static, H: Fn(MouseSc
                         }
                     },
                     WindowEvent::KeyboardInput {input, ..} => {
-                        todo!("Add key press handling");
+                        if let Some(key) = input.virtual_keycode {
+                            match input.state {
+                                winit::event::ElementState::Pressed => {
+                                    {
+                                        let mut controller_lock = controller.write().unwrap();
+                                        controller_lock.handle_key_press(KeyType::Keyboard(key.into()));
+                                    }
+                                },
+                                winit::event::ElementState::Released => {
+                                    {
+                                        let mut controller_lock = controller.write().unwrap();
+                                        controller_lock.handle_key_release(KeyType::Keyboard(key.into()));
+                                    }
+                                }
+                            }
+                        }
                     },
                     WindowEvent::CursorMoved {  position, .. } => {
-                        todo!("Add mouse move handling");
+                        {
+                            let mut controller_lock = controller.write().unwrap();
+                            controller_lock.handle_mouse_move(WindowPixelPosition::new(position.x as i32, position.y as i32));
+                        }
                     },
                     WindowEvent::MouseWheel { delta, .. } => {
-                        todo!("Add mouse scroll handling");
+                        {
+                            let mut controller_lock = controller.write().unwrap();
+                            controller_lock.handle_mouse_scroll(delta.into());
+                        }
                     },
-                    WindowEvent::MouseInput { button, .. } => {
-                        todo!("Add mouse button handling");
+                    WindowEvent::MouseInput { button, state, .. } => {
+                        {
+                            let mut controller_lock = controller.write().unwrap();
+                            match state {
+                                winit::event::ElementState::Pressed => controller_lock.handle_key_press(KeyType::MouseButton(button.into())),
+                                winit::event::ElementState::Released => controller_lock.handle_key_release(KeyType::MouseButton(button.into())),
+                            }
+                        
+                        }
                     }
                     _ => {}
                 },
