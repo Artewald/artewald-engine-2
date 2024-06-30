@@ -1,5 +1,6 @@
 use std::{borrow::Cow, sync::{mpsc, Arc, RwLock}};
 
+use log::{trace, info, warn, error};
 use winit::{event::{Event, WindowEvent}, event_loop::{ControlFlow, EventLoop}, window::WindowBuilder};
 
 use crate::{graphics_objects::GraphicsObject, inputs::{KeyType, KeyboardKeyCodes, MouseScrollDelta, WindowPixelPosition}, pipeline_manager::Vertex, vk_controller::{ObjectID, VkController, VkControllerGraphicsObjectsControl}};
@@ -20,10 +21,11 @@ pub struct ArtewaldEngine {
 
 impl ArtewaldEngine {
     pub fn new(window_title: &str, application_name: &str) -> Self {
+        trace!("Creating ArtewaldEngine");
         let event_loop = EventLoop::new();
         let window = WindowBuilder::new().with_title(window_title).build(&event_loop).unwrap();
         let vk_controller = VkController::new(window, application_name);
-
+        trace!("ArtewaldEngine created");
         Self {
             vk_controller,
             event_loop: Some(event_loop),
@@ -37,54 +39,67 @@ impl ArtewaldEngine {
     }
 
     pub fn set_on_key_pressed_callback(&mut self, callback: Box<dyn Fn(KeyType)>) {
+        trace!("Setting on_key_pressed_callback");
         self.on_button_pressed_callback = Some(callback);
     }
 
     pub fn take_on_key_pressed_callback(&mut self) -> Option<Box<dyn Fn(KeyType)>> {
+        trace!("Taking on_key_pressed_callback");
         self.on_button_pressed_callback.take()
     }
 
     pub fn remove_on_key_pressed_callback(&mut self) {
+        trace!("Removing on_key_pressed_callback");
         self.on_button_pressed_callback = None;
     }
 
     pub fn set_on_key_released_callback(&mut self, callback: Box<dyn Fn(KeyType)>) {
+        trace!("Setting on_key_released_callback");
         self.on_button_released_callback = Some(callback);
     }
 
     pub fn take_on_key_released_callback(&mut self) -> Option<Box<dyn Fn(KeyType)>> {
+        trace!("Taking on_key_released_callback");
         self.on_button_released_callback.take()
     }
 
     pub fn remove_on_key_released_callback(&mut self) {
+        trace!("Removing on_key_released_callback");
         self.on_button_released_callback = None;
     }
 
     pub fn set_on_mouse_moved_callback(&mut self, callback: Box<dyn Fn(WindowPixelPosition)>) {
+        trace!("Setting on_mouse_moved_callback");
         self.on_mouse_moved_callback = Some(callback);
     }
 
     pub fn take_on_mouse_moved_callback(&mut self) -> Option<Box<dyn Fn(WindowPixelPosition)>> {
+        trace!("Taking on_mouse_moved_callback");
         self.on_mouse_moved_callback.take()
     }
 
     pub fn remove_on_mouse_moved_callback(&mut self) {
+        trace!("Removing on_mouse_moved_callback");
         self.on_mouse_moved_callback = None;
     }
 
     pub fn set_on_mouse_scrolled_callback(&mut self, callback: Box<dyn Fn(MouseScrollDelta)>) {
+        trace!("Setting on_mouse_scrolled_callback");
         self.on_mouse_scrolled_callback = Some(callback);
     }
 
     pub fn take_on_mouse_scrolled_callback(&mut self) -> Option<Box<dyn Fn(MouseScrollDelta)>> {
+        trace!("Taking on_mouse_scrolled_callback");
         self.on_mouse_scrolled_callback.take()
     }
 
     pub fn remove_on_mouse_scrolled_callback(&mut self) {
+        trace!("Removing on_mouse_scrolled_callback");
         self.on_mouse_scrolled_callback = None;
     }
 
     pub fn remove_all_callbacks(&mut self) {
+        trace!("Removing all callbacks");
         self.on_button_pressed_callback = None;
         self.on_button_released_callback = None;
         self.on_mouse_moved_callback = None;
@@ -92,36 +107,45 @@ impl ArtewaldEngine {
     }
 
     pub fn set_lock_cursor(&mut self, lock: bool) {
+        trace!("Setting cursor lock to {}", lock);
         self.is_cursor_locked = lock;
     }
 
     fn handle_key_press(&mut self, key: KeyType) {
+        trace!("Key pressed: {:?}", key);
         if !self.currently_pressed_keys.contains(&key) {
             self.currently_pressed_keys.push(key);
             if let Some(callback) = &self.on_button_pressed_callback {
+                trace!("Calling on_button_pressed_callback for key: {:?}", key);
                 callback(key);
             }
         }
     }
 
     fn handle_key_release(&mut self, key: KeyType) {
+        trace!("Key released: {:?}", key);
         self.currently_pressed_keys.retain(|&x| x != key);
         if let Some(callback) = &self.on_button_released_callback {
+            trace!("Calling on_button_released_callback for key: {:?}", key);
             callback(key);
         }
     }
 
     pub fn borrow_currently_pressed_keys(&self) -> &[KeyType] {
+        trace!("Borrowing currently pressed keys");
         &self.currently_pressed_keys
     }
 
     fn handle_mouse_move(&mut self, position: WindowPixelPosition) {
+        trace!("Mouse moved to: {:?}", position);
         if let Some(callback) = &self.on_mouse_moved_callback {
+            trace!("Calling on_mouse_moved_callback for position: {:?}", position);
             callback(position);
         }
     }
 
     fn handle_mouse_scroll(&mut self, delta: MouseScrollDelta) {
+        trace!("Mouse scrolled: {:?}", delta);
         if let Some(callback) = &self.on_mouse_scrolled_callback {
             callback(delta);
         }
@@ -131,16 +155,18 @@ impl ArtewaldEngine {
         let event_loop = controller.write().unwrap().event_loop.take().unwrap();
         let mut frame_count = 0;
         let mut last_fps_print = std::time::Instant::now();
+        info!("Event loop retrieved from controller.");
 
         let (render_sender, main_receiver) = mpsc::channel();
         let (main_sender, render_receiver) = mpsc::channel();
+        info!("Channels for communication between main and render threads created.");
 
         let controller_cpy = controller.clone();
 
         let mut new_main_handle = Some(std::thread::spawn(move || {
             new_main_function(controller_cpy, main_sender, main_receiver);
         }));
-        
+        info!("New main thread created. And starting event loop.");
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Poll;
 
@@ -211,7 +237,7 @@ impl ArtewaldEngine {
                 Err(err) => match err {
                     mpsc::TryRecvError::Empty => {},
                     mpsc::TryRecvError::Disconnected => {
-                        println!("Main thread disconnected. Exiting...");
+                        warn!("The main thread has stopped before the rendering thread was able to receive the signal. Shutting down the render thread.");
                         *control_flow = ControlFlow::Exit;
                     }
                 }
@@ -219,8 +245,10 @@ impl ArtewaldEngine {
             }
 
             if close {
+                info!("Closing the event loop.");
                 let _ = render_sender.send(());
                 new_main_handle.take().unwrap().join().unwrap();
+                
                 {
                     let mut controller_lock = controller.write().unwrap();
                     controller_lock.vk_controller.cleanup();

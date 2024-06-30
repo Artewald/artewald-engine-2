@@ -1,4 +1,4 @@
-
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 /// WindowPixelPosition from top left corner of the window. Same as [winit::dpi::PhysicalPosition] as i32 mouse position.
 pub struct WindowPixelPosition {
     pub x: i32,
