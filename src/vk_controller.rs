@@ -80,7 +80,7 @@ struct SwapchainSupportDetails {
 impl VkController {
     const DEVICE_EXTENSIONS: [*const i8; 2] = [Swapchain::name().as_ptr(), ExtDescriptorIndexingFn::name().as_ptr()];
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
-    const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
+    const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation\0"];
     pub const MAX_OBJECT_TYPES:  usize = 1000;
 
     pub fn new(window: Window, application_name: &str) -> Self {
@@ -243,6 +243,7 @@ impl VkController {
                         current_layer_name.push(*byte as char);
                     }
                 });
+                current_layer_name.push_str("\0");
 
                 if layer_name == current_layer_name {
                     layer_found = true;
