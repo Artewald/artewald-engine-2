@@ -3,7 +3,7 @@ use std::{borrow::Cow, sync::{mpsc, Arc, RwLock}};
 use log::{trace, info, warn, error};
 use winit::{event::{Event, WindowEvent}, event_loop::{ControlFlow, EventLoop}, window::WindowBuilder};
 
-use crate::{graphics_objects::GraphicsObject, inputs::{KeyType, KeyboardKeyCodes, MouseScrollDelta, WindowPixelPosition}, pipeline_manager::Vertex, vk_controller::{ObjectID, VkController, VkControllerGraphicsObjectsControl}};
+use crate::{graphics_objects::GraphicsObject, inputs::{KeyType, KeyboardKeyCodes, MouseScrollDelta, WindowPixelPosition}, pipeline_manager::Vertex, vk_controller::{FrameSavingOption, ObjectID, VkController, VkControllerGraphicsObjectsControl}};
 
 pub type TerminatorSignalSender = mpsc::Sender<()>;
 pub type TerminatorSignalReceiver = mpsc::Receiver<()>;
@@ -258,7 +258,7 @@ impl ArtewaldEngine {
             
             {
                 let mut controller_lock = controller.write().unwrap();
-                if controller_lock.vk_controller.try_to_draw_frame() {
+                if controller_lock.vk_controller.try_to_draw_frame(FrameSavingOption::False) {
                     frame_count += 1;
                     if last_fps_print.elapsed().as_secs_f32() > 1.0 {
                         println!("FPS: {}", frame_count as f32 / last_fps_print.elapsed().as_secs_f32());

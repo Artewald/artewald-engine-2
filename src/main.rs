@@ -5,7 +5,7 @@ use graphics_objects::{TextureResource, UniformBufferResource};
 use pipeline_manager::ShaderInfo;
 use test_objects::{SimpleRenderableObject, TwoDPositionSimpleRenderableObject};
 use vertex::{generate_circle_type_one, generate_circle_type_three, generate_circle_type_two, SimpleVertex};
-use vk_controller::{VkController, VkControllerGraphicsObjectsControl};
+use vk_controller::{FrameSavingOption, VkController, VkControllerGraphicsObjectsControl};
 use winit::{event_loop::{EventLoop, ControlFlow}, window::WindowBuilder, event::{Event, WindowEvent, ElementState, KeyboardInput}};
 use nalgebra_glm as glm;
 
@@ -182,14 +182,12 @@ fn main() {
     let mut frame_count = 0;
     let mut last_fps_print = std::time::Instant::now();
     let start_time = Instant::now();
+    let mut save_frame = FrameSavingOption::False;
 
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Poll;
 
         let mut close = false;
-        if start_time.elapsed().as_secs() >= 10 {
-            *control_flow = ControlFlow::Exit;
-        }
 
         match event {
             Event::WindowEvent { event, .. } => match event {
@@ -210,6 +208,9 @@ fn main() {
                     match keycode {
                         winit::event::VirtualKeyCode::Escape => {
                             *control_flow = ControlFlow::Exit;
+                        },
+                        winit::event::VirtualKeyCode::Key1 => {
+                            save_frame = FrameSavingOption::True {file_path: String::from("./test.png")};
                         },
                         // winit::event::VirtualKeyCode::Key1 => {
                         //     vk_controller.remove_object_to_render(current_object_id);
@@ -242,13 +243,14 @@ fn main() {
         // obj1.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(-1.5, 1.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
         // obj2.write().unwrap().model_matrix.write().unwrap().buffer = glm::translate(&glm::identity(), &glm::Vec3::new(1.5, 1.0, 0.0)) * glm::rotate(&glm::identity(), start_time.elapsed().as_secs_f32() * std::f32::consts::PI * 0.25, &glm::vec3(0.0, 1.0, 0.0)) * glm::rotate(&glm::identity(), -90.0f32.to_radians(), &glm::vec3(1.0, 0.0, 0.0));
 
-        if vk_controller.try_to_draw_frame() {
+        if vk_controller.try_to_draw_frame(save_frame.clone()) {
             frame_count += 1;
             if last_fps_print.elapsed().as_secs_f32() > 1.0 {
                 println!("FPS: {}", frame_count as f32 / last_fps_print.elapsed().as_secs_f32());
                 frame_count = 0;
                 last_fps_print = std::time::Instant::now();
             }
+            save_frame = FrameSavingOption::False;
         }
     });
 }

@@ -783,6 +783,27 @@ impl VkAllocator {
         Err(Cow::from("Failed to find suitable memory type!"))
     }
 
+    pub fn map_memory_allocation_and_get_data_ptr(&self, allocation_info: &AllocationInfo) -> Result<*mut c_void, Cow<'static, str>> {
+        let size = allocation_info.get_memory_end() - allocation_info.get_memory_start();
+        unsafe {
+            match self.device.map_memory(
+                allocation_info.get_memory(),
+                allocation_info.get_memory_start(),
+                size,
+                vk::MemoryMapFlags::empty()
+            ) {
+                Ok(ptr) => Ok(ptr),
+                Err(err) => Err(Cow::from(format!("Failed to map memory: {:?}", err)))
+            }
+        }
+    }
+
+    pub fn unmap_memory_allocation(&self, allocation_info: &AllocationInfo) {
+        unsafe {
+            self.device.unmap_memory(allocation_info.get_memory());
+        }
+    }
+
     pub unsafe fn get_allocation_callbacks(&self) -> vk::AllocationCallbacks {
         vk::AllocationCallbacks {
             p_user_data: Arc::into_raw(self.host_allocator.clone()) as *mut c_void,
