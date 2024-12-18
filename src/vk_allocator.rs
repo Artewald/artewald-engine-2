@@ -235,7 +235,7 @@ impl VkAllocator {
         Ok(image_allocation)
     }    
 
-    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+    pub fn create_device_local_image(&mut self, image: &DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         // let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = image.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;

@@ -296,7 +296,7 @@ impl VkController {
             instance.get_physical_device_features(*device)
         };
 
-        indices.is_complete() && Self::check_device_extension_support(instance, device) && Self::is_swapchain_adequate(&swapchain_support) && supported_features.sampler_anisotropy == vk::TRUE
+        indices.is_complete() && Self::check_device_extension_support(instance, device) && Self::is_swapchain_adequate(&swapchain_support) && supported_features.sampler_anisotropy == vk::TRUE && supported_features.vertex_pipeline_stores_and_atomics == vk::TRUE
     }
 
     fn check_device_extension_support(instance: &Instance, device: &PhysicalDevice) -> bool {
@@ -404,6 +404,7 @@ impl VkController {
             sampler_anisotropy: vk::TRUE,
             sample_rate_shading: vk::TRUE, // This may cause performance loss, but it's not required
             fill_mode_non_solid: vk::TRUE, // This is only required for wireframe rendering
+            vertex_pipeline_stores_and_atomics: vk::TRUE,
             ..Default::default()
         };
 

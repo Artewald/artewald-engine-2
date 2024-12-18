@@ -10,9 +10,9 @@ pub enum ObjectInstanceGraphicsResourceType {
     DynamicStorageBuffer(Vec<u8>),
 }
 
-pub enum ObjectTypeGraphicsResourceType {
+pub enum ObjectTypeGraphicsResourceType<'a> {
     UniformBuffer(Vec<u8>),
-    Texture(DynamicImage),
+    Texture { image: &'a DynamicImage },
 }
 
 pub trait Vertex: Serializable + Hash + Clone + Send + 'static {
