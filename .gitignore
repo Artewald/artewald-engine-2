@@ -1,1 +1,5 @@
 /target
+/assets/non-free-objects
+perf.data
+perf.data.old
+flamegraph.svg

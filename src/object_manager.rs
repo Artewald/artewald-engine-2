@@ -308,7 +308,7 @@ impl DataUsedInShader {
         for (resource_id, resource) in objects_to_add.first().unwrap().1.get_type_resources().iter() {
             let layout_binding = resource.read().unwrap().get_descriptor_set_layout_binding();
             match resource.read().unwrap().get_resource() {
-                ObjectTypeGraphicsResourceType::Texture(_) => {
+                ObjectTypeGraphicsResourceType::Texture { image: _ } => {
                     descriptor_type_data.push((*resource_id, DescriptorType::COMBINED_IMAGE_SAMPLER, layout_binding));
                 },
                 ObjectTypeGraphicsResourceType::UniformBuffer(_) => {
@@ -349,7 +349,7 @@ impl DataUsedInShader {
             if newly_added_object_type {
                 for (resource_id, resource) in object.1.get_type_resources() {
                     match resource.read().unwrap().get_resource() {
-                        ObjectTypeGraphicsResourceType::Texture(image) => {
+                        ObjectTypeGraphicsResourceType::Texture { image } => {
                             match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, textures, uniform_buffers, storage_uniform_buffers, sampler_manager, allocator) {
                                 Ok(_) => (),
                                 Err(e) => return Err(e),
@@ -421,7 +421,7 @@ impl DataUsedInShader {
             if newly_added_object_type {
                 for (resource_id, resource) in object.1.get_type_resources() {
                     match resource.read().unwrap().get_resource() {
-                        ObjectTypeGraphicsResourceType::Texture(image) => {
+                        ObjectTypeGraphicsResourceType::Texture { image } => {
                             match Self::create_and_add_static_texture(object_type, resource_id, image, device, instance, physical_device, command_pool, graphics_queue, &mut textures, &mut uniform_buffers, &mut storage_uniform_buffers, sampler_manager, allocator) {
                                 Ok(_) => (),
                                 Err(e) => return Err(e),
@@ -639,7 +639,7 @@ impl DataUsedInShader {
                             std::ptr::copy_nonoverlapping(data.as_ptr() as *const std::ffi::c_void, allocation.get_uniform_pointers()[current_frame], (allocation.get_memory_end()-allocation.get_memory_start()) as usize);
                         }
                     },
-                    ObjectTypeGraphicsResourceType::Texture(_) => (), //TODO: Implement texture update
+                    ObjectTypeGraphicsResourceType::Texture { image: _ } => (), //TODO: Implement texture update
                 };
             }
         });
@@ -847,7 +847,7 @@ impl DataUsedInShader {
         Ok(())
     }
 
-    fn create_and_add_static_texture(object_type: ObjectType, resource_id: ResourceID, image: DynamicImage, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, graphics_queue: &Queue, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
+    fn create_and_add_static_texture(object_type: ObjectType, resource_id: ResourceID, image: &DynamicImage, device: &Device, instance: &Instance, physical_device: &PhysicalDevice, command_pool: &vk::CommandPool, graphics_queue: &Queue, new_textures: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Sampler)>, new_uniform_buffers: &mut HashMap<(ObjectType, ResourceID), AllocationInfo>, new_storage_buffers: &mut HashMap<(ObjectType, ResourceID), (AllocationInfo, Vec<u8>)>, sampler_manager: &mut SamplerManager, allocator: &mut VkAllocator) -> Result<(), Cow<'static, str>> {
         let mut allocation = match allocator.create_device_local_image(image, command_pool, graphics_queue, u32::MAX, vk::SampleCountFlags::TYPE_1, false) {
             Ok(alloc) => alloc,
             Err(e) => {

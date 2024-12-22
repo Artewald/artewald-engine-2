@@ -1,4 +1,4 @@
-use std::{borrow::Cow, collections::{HashMap, HashSet}, rc::Rc, sync::{Arc, RwLock}};
+use std::{borrow::Cow, collections::{HashMap, HashSet}, sync::{Arc, RwLock}};
 
 use ash::{extensions::{ext::DebugUtils, khr::{Surface, Swapchain}}, vk::{self, DebugUtilsMessengerCreateInfoEXT, DescriptorSetLayoutBinding, DeviceCreateInfo, DeviceQueueCreateInfo, ExtDescriptorIndexingFn, Image, ImageView, InstanceCreateInfo, PhysicalDevice, Queue, StructureType, SurfaceKHR, SwapchainCreateInfoKHR, SwapchainKHR}, Device, Entry, Instance};
 use raw_window_handle::{HasRawDisplayHandle, HasRawWindowHandle};
@@ -23,13 +23,19 @@ const IS_DEBUG_MODE: bool = true;
 #[cfg(not(debug_assertions))]
 const IS_DEBUG_MODE: bool = false;
 
+#[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Clone)]
+pub enum FrameSavingOption {
+    False,
+    True {file_path: String},
+}
+
 pub struct VkController {
     window: Window,
     entry: Entry,
-    instance: Rc<Instance>,
+    instance: Arc<Instance>,
     debug_messenger: Option<vk::DebugUtilsMessengerEXT>,
     physical_device: PhysicalDevice,
-    device: Rc<Device>,
+    device: Arc<Device>,
     graphics_queue: Queue,
     present_queue: Queue,
     surface: SurfaceKHR,
@@ -80,7 +86,7 @@ struct SwapchainSupportDetails {
 impl VkController {
     const DEVICE_EXTENSIONS: [*const i8; 2] = [Swapchain::name().as_ptr(), ExtDescriptorIndexingFn::name().as_ptr()];
     pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
-    const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation"];
+    const VALIDATION_LAYERS: [&'static str; 1] = ["VK_LAYER_KHRONOS_validation\0"];
     pub const MAX_OBJECT_TYPES:  usize = 1000;
 
     pub fn new(window: Window, application_name: &str) -> Self {
@@ -91,7 +97,7 @@ impl VkController {
         } else {
             None
         };
-        let instance = Rc::new(Self::create_instance(&entry, application_name, &window, debug_messenger_create_info.as_ref()));
+        let instance = Arc::new(Self::create_instance(&entry, application_name, &window, debug_messenger_create_info.as_ref()));
 
         let mut debug_messenger = None;
         if IS_DEBUG_MODE {
@@ -104,7 +110,7 @@ impl VkController {
 
         let queue_families = Self::find_queue_families(&entry, &instance, &physical_device, &surface);
         
-        let device = Rc::new(Self::create_logical_device(&entry, &instance, &physical_device, &surface));
+        let device = Arc::new(Self::create_logical_device(&entry, &instance, &physical_device, &surface));
 
         let mut allocator = VkAllocator::new(instance.clone(), physical_device, device.clone());
 
@@ -125,7 +131,6 @@ impl VkController {
         let color_image_allocation = Self::create_color_resources(swapchain_image_format, &swapchain_extent, msaa_samples, &mut allocator );
         
         let depth_image_allocation = Self::create_depth_resources(&instance, &physical_device, &swapchain_extent, msaa_samples, &mut allocator );
-        
         
         let command_pool = Self::create_command_pool(&device, &queue_families, &mut allocator );
 
@@ -243,6 +248,7 @@ impl VkController {
                         current_layer_name.push(*byte as char);
                     }
                 });
+                current_layer_name.push_str("\0");
 
                 if layer_name == current_layer_name {
                     layer_found = true;
@@ -295,7 +301,7 @@ impl VkController {
             instance.get_physical_device_features(*device)
         };
 
-        indices.is_complete() && Self::check_device_extension_support(instance, device) && Self::is_swapchain_adequate(&swapchain_support) && supported_features.sampler_anisotropy == vk::TRUE
+        indices.is_complete() && Self::check_device_extension_support(instance, device) && Self::is_swapchain_adequate(&swapchain_support) && supported_features.sampler_anisotropy == vk::TRUE && supported_features.vertex_pipeline_stores_and_atomics == vk::TRUE
     }
 
     fn check_device_extension_support(instance: &Instance, device: &PhysicalDevice) -> bool {
@@ -403,6 +409,7 @@ impl VkController {
             sampler_anisotropy: vk::TRUE,
             sample_rate_shading: vk::TRUE, // This may cause performance loss, but it's not required
             fill_mode_non_solid: vk::TRUE, // This is only required for wireframe rendering
+            vertex_pipeline_stores_and_atomics: vk::TRUE,
             ..Default::default()
         };
 
@@ -549,6 +556,7 @@ impl VkController {
             image_count = swapchain_support.capabilities.max_image_count;
         }
 
+        println!("VkController: Creating swapchain with TRANSFER_SRC, which might impact performance, remove it if not needed!");
         let mut swapchain_create_info = SwapchainCreateInfoKHR {
             s_type: StructureType::SWAPCHAIN_CREATE_INFO_KHR,
             surface: *surface,
@@ -557,7 +565,7 @@ impl VkController {
             image_color_space: surface_format.color_space,
             image_extent: extent,
             image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::TRANSFER_SRC,
             pre_transform: swapchain_support.capabilities.current_transform,
             composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
             present_mode,
@@ -799,15 +807,16 @@ impl VkController {
                 });
             });
             device.cmd_end_render_pass(*command_buffer);
+
             device.end_command_buffer(*command_buffer)
         }.unwrap();
     }
 
-    pub fn try_to_draw_frame(&mut self) -> bool {
-        self.draw_frame(0)
+    pub fn try_to_draw_frame(&mut self, save_frame: FrameSavingOption) -> bool {
+        self.draw_frame(0, save_frame)
     }
 
-    fn draw_frame(&mut self, timeout: u64) -> bool {
+    fn draw_frame(&mut self, timeout: u64, save_frame: FrameSavingOption) -> bool {
         if self.is_minimized && !self.frame_buffer_resized {
             return false;
         }
@@ -884,6 +893,11 @@ impl VkController {
             },
             Err(error) => panic!("Failed to present queue: {:?}", error),
         };
+
+        match save_frame {
+            FrameSavingOption::False => (),
+            FrameSavingOption::True { file_path } => self.save_swapchain_image(&file_path),
+        }
         if self.frame_buffer_resized {
             self.frame_buffer_resized = false;
             self.recreate_swapchain();
@@ -1030,6 +1044,164 @@ impl VkController {
     // The object will not be remove until the all frames in flight have passed
     pub fn remove_objects_to_render(&mut self, object_ids: Vec<ObjectID>) -> Result<(), Cow<'static, str>> {
         self.object_manager.remove_objects(object_ids, &self.command_pool, &self.graphics_queue, self.current_frame, &mut self.allocator)
+    }
+
+    pub fn borrow_window(&self) -> &Window {
+        &self.window
+    }
+}
+
+impl VkController {
+    fn save_swapchain_image(&mut self, file_path: &str) {
+        let command_buffer = self.begin_single_time_commands();
+
+        let swapchain_image = self.swapchain_images[self.current_frame];
+        let extent = self.swapchain_extent;
+
+        self.transition_image_layout(
+            command_buffer,
+            swapchain_image,
+            vk::ImageLayout::PRESENT_SRC_KHR,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        );
+
+        let image_size = (extent.width * extent.height * 4) as vk::DeviceSize;
+        let staging_buffer_allocation = self.allocator.create_buffer(
+            image_size,
+            vk::BufferUsageFlags::TRANSFER_DST,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT, false
+        ).expect("Failed to create staging buffer");
+
+        let region = vk::BufferImageCopy {
+            buffer_offset: 0,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            image_offset: vk::Offset3D { x: 0, y: 0, z: 0 },
+            image_extent: vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            },
+        };
+
+        unsafe {
+            self.device.cmd_copy_image_to_buffer(command_buffer, swapchain_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, staging_buffer_allocation.get_buffer().unwrap(), &[region]);
+        }
+
+        self.transition_image_layout(command_buffer, swapchain_image, vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR);
+
+        self.end_single_time_commands(command_buffer);
+
+        let pixel_data = self.allocator.map_memory_allocation_and_get_data_ptr(&staging_buffer_allocation).unwrap();
+        let data_slice = unsafe {
+            std::slice::from_raw_parts(pixel_data as *const u8, image_size as usize)
+        };
+
+        // This will be wrong becaue the image is BGRA, not RGBA, but I will just let it be for now
+        image::save_buffer(file_path, data_slice, self.swapchain_extent.width, self.swapchain_extent.height, image::ColorType::Rgba8).expect("Expected to be able to save image from swapchain!");
+
+        self.allocator.unmap_memory_allocation(&staging_buffer_allocation);
+        self.allocator.free_memory_allocation(staging_buffer_allocation).unwrap();
+    }
+
+    fn begin_single_time_commands(&self) -> vk::CommandBuffer {
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_ALLOCATE_INFO,
+            command_pool: self.command_pool,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: 1,
+            ..Default::default()
+        };
+
+        let command_buffer = unsafe {
+            self.device.allocate_command_buffers(&alloc_info)
+        }.expect("Failed to allocate command buffers")[0];
+
+        let begin_info = vk::CommandBufferBeginInfo {
+            s_type: vk::StructureType::COMMAND_BUFFER_BEGIN_INFO,
+            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device.begin_command_buffer(command_buffer, &begin_info)
+        }.unwrap();
+
+        command_buffer
+    }
+
+    fn end_single_time_commands(&self, command_buffer: vk::CommandBuffer) {
+        unsafe {
+            self.device.end_command_buffer(command_buffer).unwrap();
+        }
+
+        let submit_info = vk::SubmitInfo {
+            s_type: vk::StructureType::SUBMIT_INFO,
+            command_buffer_count: 1,
+            p_command_buffers: &command_buffer,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device.queue_submit(self.graphics_queue, &[submit_info], vk::Fence::null())
+                .expect("Failed to submit to queue.");
+            self.device.queue_wait_idle(self.graphics_queue)
+                .expect("Failed to wait queue idle.");
+            self.device.free_command_buffers(self.command_pool, &[command_buffer]);
+        }
+    }
+
+    fn transition_image_layout(
+        &self,
+        cmd_buf: vk::CommandBuffer,
+        image: vk::Image,
+        old_layout: vk::ImageLayout,
+        new_layout: vk::ImageLayout,
+    ) {
+        let (src_access_mask, dst_access_mask, src_stage, dst_stage) = match (old_layout, new_layout) {
+            (vk::ImageLayout::PRESENT_SRC_KHR, vk::ImageLayout::TRANSFER_SRC_OPTIMAL) => (
+                vk::AccessFlags::empty(),
+                vk::AccessFlags::TRANSFER_READ,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+            ),
+            (vk::ImageLayout::TRANSFER_SRC_OPTIMAL, vk::ImageLayout::PRESENT_SRC_KHR) => (
+                vk::AccessFlags::TRANSFER_READ,
+                vk::AccessFlags::empty(),
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            ),
+            _ => panic!("Unsupported layout transition!"),
+        };
+
+        let barrier = vk::ImageMemoryBarrier {
+            s_type: vk::StructureType::IMAGE_MEMORY_BARRIER,
+            old_layout,
+            new_layout,
+            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            image,
+            subresource_range: vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            },
+            src_access_mask,
+            dst_access_mask,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.device.cmd_pipeline_barrier(cmd_buf, src_stage, dst_stage, vk::DependencyFlags::empty(), &[], &[], &[barrier]);
+        }
     }
 }
 

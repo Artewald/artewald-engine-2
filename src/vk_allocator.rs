@@ -34,9 +34,9 @@ struct HostAllocationPool {
 }
 
 pub struct VkAllocator {
-    device: Rc<Device>,
+    device: Arc<Device>,
     physical_device: vk::PhysicalDevice,
-    instance: Rc<Instance>,
+    instance: Arc<Instance>,
     device_allocations: HashMap<MemoryTypeIndex, Vec<(vk::DeviceMemory, Vec<MemorySizeRange>)>>,
     host_allocator: Arc<Mutex<VkHostAllocator>>,
 }
@@ -50,7 +50,7 @@ pub struct VkHostAllocator {
 impl VkAllocator {
     const DEFAULT_DEVICE_MEMORY_ALLOCATION_BYTE_SIZE: vk::DeviceSize = 256_000_000; // 256 MB 
 
-    pub fn new(instance: Rc<Instance>, physical_device: vk::PhysicalDevice, device: Rc<Device>) -> Self {
+    pub fn new(instance: Arc<Instance>, physical_device: vk::PhysicalDevice, device: Arc<Device>) -> Self {
         Self {
             device,
             physical_device,
@@ -235,7 +235,7 @@ impl VkAllocator {
         Ok(image_allocation)
     }    
 
-    pub fn create_device_local_image(&mut self, image: DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
+    pub fn create_device_local_image(&mut self, image: &DynamicImage, command_pool: &vk::CommandPool, graphics_queue: &vk::Queue, max_mip_levels: u32, num_samples: vk::SampleCountFlags, force_own_memory_block: bool) -> Result<AllocationInfo, Cow<'static, str>> {
         // let binding = image::open("./assets/images/viking_room.png").unwrap();
         let image = image.to_rgba8();
         let image_size: vk::DeviceSize = image.dimensions().0 as vk::DeviceSize * image.dimensions().1 as vk::DeviceSize * 4 as vk::DeviceSize;
@@ -781,6 +781,27 @@ impl VkAllocator {
             }
         }
         Err(Cow::from("Failed to find suitable memory type!"))
+    }
+
+    pub fn map_memory_allocation_and_get_data_ptr(&self, allocation_info: &AllocationInfo) -> Result<*mut c_void, Cow<'static, str>> {
+        let size = allocation_info.get_memory_end() - allocation_info.get_memory_start();
+        unsafe {
+            match self.device.map_memory(
+                allocation_info.get_memory(),
+                allocation_info.get_memory_start(),
+                size,
+                vk::MemoryMapFlags::empty()
+            ) {
+                Ok(ptr) => Ok(ptr),
+                Err(err) => Err(Cow::from(format!("Failed to map memory: {:?}", err)))
+            }
+        }
+    }
+
+    pub fn unmap_memory_allocation(&self, allocation_info: &AllocationInfo) {
+        unsafe {
+            self.device.unmap_memory(allocation_info.get_memory());
+        }
     }
 
     pub unsafe fn get_allocation_callbacks(&self) -> vk::AllocationCallbacks {

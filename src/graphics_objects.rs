@@ -83,7 +83,7 @@ impl ObjectTypeGraphicsResource for TextureResource {
     }
 
     fn get_resource(&self) -> ObjectTypeGraphicsResourceType {
-        ObjectTypeGraphicsResourceType::Texture(self.image.clone())
+        ObjectTypeGraphicsResourceType::Texture { image: &self.image }
     }
 }
 
